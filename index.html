@@ -39,7 +39,7 @@
   <div class="login-sec">
     <div class="login-box">
       <div class="login-title">Welcome Back</div>
-      <div class="login-hint">Select your role (enable demo mode to auto-fill credentials)</div>
+      <div class="login-hint">Presentation mode: pick a role, use password <strong style="color:var(--mg);">demo2025</strong>, then sign in.</div>
       <div class="rp-label">I am a…</div>
       <div class="role-picker" id="role-picker">
         <button class="rp-btn active" data-role="admin" onclick="pickRole(this)">Admin</button>
@@ -50,8 +50,22 @@
         <button class="rp-btn" data-role="boss" onclick="pickRole(this)">Boss</button>
       </div>
       <div style="margin-top:8px;font-size:12px;color:rgba(255,255,255,.5);">
-        <label style="display:inline-flex;align-items:center;gap:8px;"><input type="checkbox" id="demo-mode" onchange="onDemoToggle()"> Enable demo mode (auto-fill credentials)</label>
+        <label style="display:inline-flex;align-items:center;gap:8px;"><input type="checkbox" id="demo-mode" checked onchange="onDemoToggle()"> Demo / presentation mode</label>
       </div>
+      <div id="demo-pass-hint" style="margin-top:6px;font-size:11.5px;color:rgba(255,255,255,.65);">Password: <strong>demo2025</strong> (any role)</div>
+      <div style="margin-top:10px;">
+        <button type="button" class="btn btn-ol btn-sm" style="width:100%;justify-content:center;border-color:rgba(255,255,255,.35);color:#fff;" onclick="resetDemoData()">↺ Restore full sample dataset</button>
+      </div>
+      <details class="demo-flow-hint">
+        <summary>Suggested presentation flow</summary>
+        <ol>
+          <li><strong>Boss</strong> — Override Queue → approve TKT-2026-004</li>
+          <li><strong>Accountant</strong> — Dashboard → approve TKT-2026-006 (boss already approved)</li>
+          <li><strong>PO Officer</strong> — Create PO from TKT-2026-005 (billing paid) or retry TKT-2026-004 after overrides</li>
+          <li><strong>Engineer</strong> — New Request → sample pre-filled → Submit</li>
+          <li><strong>Admin</strong> — Projects → Engineer Assignments</li>
+        </ol>
+      </details>
       <div class="lf">
         <label>Company Email</label>
         <input type="email" id="login-email" value="" placeholder="yourname@rsconstruction.com" autocomplete="email">
@@ -99,6 +113,10 @@
   </div>
 
   <div class="main-area">
+    <div class="demo-present-bar" id="demo-present-bar" style="display:none;">
+      <span>📊 Prototype — sample data loaded</span>
+      <button type="button" class="btn btn-ol btn-sm" onclick="resetDemoData()">Reset sample data</button>
+    </div>
     <div class="topbar">
       <button class="hamburger" onclick="toggleSidebar()" aria-label="Menu">
         <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
@@ -183,9 +201,10 @@
               <div class="form-lbl">Remarks (optional)</div>
               <input class="fc" type="text" id="nt-remarks" placeholder="Additional notes, site constraints, or observations">
             </div>
-            <div style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap;">
-              <button class="btn btn-ol" onclick="navigate('emp-dashboard')">Cancel</button>
-              <button class="btn btn-mg btn-lg" onclick="submitTicket()">Submit Ticket →</button>
+            <div style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap;align-items:center;">
+              <button type="button" class="btn btn-ol" onclick="navigate('emp-dashboard')">Cancel</button>
+              <button type="button" class="btn btn-bl btn-sm" onclick="fillSampleTicketForm()">Load sample request</button>
+              <button type="button" class="btn btn-mg btn-lg" onclick="submitTicket()">Submit Ticket →</button>
             </div>
           </div>
         </div>

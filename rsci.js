@@ -51,15 +51,76 @@ function dueDateStatus(dueDateStr) {
   return 'ok';
 }
 
-// ── LOCAL STORAGE ─────────────────────────────────────────────
+// ── LOCAL STORAGE & DEMO SEED ─────────────────────────────────
 const DB_KEY = 'rsci_db_v3';
+const SEED_VERSION = 3;
+const SEED_VERSION_KEY = 'rsci_seed_version';
+const DEMO_PASSWORD = 'demo2025';
+
 function saveDB() { try { localStorage.setItem(DB_KEY, JSON.stringify(DB)); } catch(e) {} }
+
+function applySeedDB() {
+  const fresh = cloneInitialDB();
+  Object.keys(DB).forEach(k=>delete DB[k]);
+  Object.assign(DB, fresh);
+  DB.po_release_queue = DB.po_release_queue || [];
+  DB.notifications = DB.notifications || [];
+  migrateDB();
+  saveDB();
+  try { localStorage.setItem(SEED_VERSION_KEY, String(SEED_VERSION)); } catch(e) {}
+}
+
+function resetDemoData() {
+  applySeedDB();
+  buildDatalist();
+  toast('Sample data restored.','ok');
+  if(_currentUser) {
+    _currentUser = mergeUserAssignments(_selectedRole, {...DEMO_USERS[_selectedRole]});
+    updateInvPill();
+    buildNotifications();
+    const defaults = {
+      admin:'acc-dashboard',accountant:'acc-dashboard',po_officer:'po-dashboard',
+      inventory_manager:'inv-dashboard',engineer:'emp-dashboard',boss:'boss-dashboard',
+    };
+    navigate(defaults[_currentUser.role] || 'acc-dashboard', null);
+  }
+}
+
 function loadDB() {
   try {
+    const seedOk = localStorage.getItem(SEED_VERSION_KEY) === String(SEED_VERSION);
     const raw = localStorage.getItem(DB_KEY);
-    if(raw) { const d = JSON.parse(raw); if(d && d.inventory) { Object.assign(DB, d); DB.po_release_queue = DB.po_release_queue || []; migrateDB(); return; } }
+    if(seedOk && raw) {
+      const d = JSON.parse(raw);
+      if(d && d.inventory) {
+        Object.keys(DB).forEach(k=>delete DB[k]);
+        Object.assign(DB, d);
+        DB.po_release_queue = DB.po_release_queue || [];
+        migrateDB();
+        return;
+      }
+    }
   } catch(e) {}
-  migrateDB();
+  applySeedDB();
+}
+
+function isDemoSession() {
+  return sessionStorage.getItem('rsci_demo_session') === '1';
+}
+
+function initDemoLoginUI() {
+  const demo=document.getElementById('demo-mode');
+  const pass=document.getElementById('login-pass');
+  const hint=document.getElementById('demo-pass-hint');
+  if(demo && !demo.checked) { demo.checked=true; }
+  onDemoToggle();
+  if(pass && !pass.value) pass.value=DEMO_PASSWORD;
+  if(hint) hint.style.display=demo?.checked?'block':'none';
+}
+
+function showDemoPresentBar() {
+  const bar=document.getElementById('demo-present-bar');
+  if(bar) bar.style.display=isDemoSession()?'flex':'none';
 }
 
 function migrateDB() {
@@ -127,7 +188,7 @@ const DEMO_USERS = {
   admin:             { name:'Ana Santos',      email:'admin@rsconstruction.com',    role:'admin',             initials:'AS' },
   accountant:        { name:'Benito Navarro',  email:'accountant@rsconstruction.com',role:'accountant',        initials:'BN' },
   po_officer:        { name:'Liza Mercado',    email:'po@rsconstruction.com',        role:'po_officer',        initials:'LM' },
-  engineer:          { name:'Marco Rivera',    email:'engineer@rsconstruction.com',  role:'engineer',          initials:'MR', assignedProjectIds:['PROJ001'] },
+  engineer:          { name:'Marco Rivera',    email:'engineer@rsconstruction.com',  role:'engineer',          initials:'MR', assignedProjectIds:['PROJ001','PROJ002'] },
   inventory_manager: { name:'Danny Pascual',   email:'inv@rsconstruction.com',       role:'inventory_manager', initials:'DP' },
   boss:              { name:'Ricardo Santos',  email:'boss@rsconstruction.com',      role:'boss',              initials:'RS' },
 };
@@ -138,8 +199,12 @@ function roleEmailsFor(roles) {
 
 let _currentUser = null;
 
-// ── DATABASE ──────────────────────────────────────────────────
-let DB = {
+// ── DATABASE (seed via cloneInitialDB) ────────────────────────
+function cloneInitialDB() {
+  const ago=(n)=>addDays(today(),-n);
+  const ahead=(n)=>addDays(today(),n);
+  const ts=(daysAgo,h=9,m=0)=>`${ago(daysAgo)}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`;
+  return {
   // ─── PROJECTS (Feature 1: Project-First Flow) ───
   projects: [
     {id:'PROJ001',name:'Maxicare Pulilan — 3F Renovation',client:'Maxicare Healthcare Corp.',code:'MAY_005',contractAmount:8500000,status:'Active',location:'Pulilan, Bulacan',remarks:'MEP scope only',createdAt:'2025-01-10'},
@@ -222,45 +287,57 @@ let DB = {
     {id:'L004',dt:new Date(Date.now()-172800000).toISOString(),type:'in',itemName:'PLUMBING:PVC PIPE 2 INCH',qtyChange:20,balanceAfter:22,remarks:'From: Neltex Direct'},
     {id:'L005',dt:new Date(Date.now()-259200000).toISOString(),type:'adjust',itemName:'MECHANICAL:FREON_T32_BIG_BLUE',qtyChange:-1,balanceAfter:0,remarks:'Inventory count adjustment'},
   ],
+  user_assignments: {
+    engineer:{assignedProjectIds:['PROJ001','PROJ002']},
+  },
   tickets: [
-    {id:'TKT001',no:'TKT-2025-001',pm:'Jose Cruz',project:'Maxicare Pulilan — 3F Renovation',projectId:'PROJ001',urgent:false,dateNeeded:'2025-05-20',submittedBy:'Carlos Reyes',submittedAt:'2025-05-10T08:30:00',status:'Partial',remarks:'Needed for electrical works',bossApproved:false,financeApproved:false,auditTrail:[{action:'Created',by:'Carlos Reyes',at:'2025-05-10T08:30:00',note:'Ticket created.'}],
+    {id:'TKT001',no:'TKT-2026-001',pm:'Marco Rivera',project:'Maxicare Pulilan — 3F Renovation',projectId:'PROJ001',urgent:false,dateNeeded:ahead(12),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(8,8,30),status:'Partial',remarks:'3F hallway electrical — partial issue from warehouse',bossApproved:false,financeApproved:false,siteLocation:'3F East wing corridor',auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(8,8,30),note:'Ticket created.'}],
       materials:[{name:'ELECTRICAL:EMT STRAIGHT_CONNECTOR 1/2',requestedQty:40,unit:'PCS',fulfilledQty:20,remainingQty:20,brand:'Conduit Pro'},{name:'ELECTRICAL:METAL_UTILITY_BOX',requestedQty:10,unit:'PCS',fulfilledQty:10,remainingQty:0,brand:'Greenfield'}]},
-    {id:'TKT002',no:'TKT-2025-002',pm:'Ramon dela Cruz',project:'Phase 2 Foundation',projectId:'PROJ004',urgent:true,dateNeeded:'2025-05-15',submittedBy:'Carlos Reyes',submittedAt:'2025-05-12T10:15:00',status:'Pending',remarks:'Urgent - rainy season approaching',bossApproved:false,financeApproved:false,auditTrail:[{action:'Created',by:'Carlos Reyes',at:'2025-05-12T10:15:00',note:'Ticket created.'}],
+    {id:'TKT002',no:'TKT-2026-002',pm:'Ramon dela Cruz',project:'Phase 2 Foundation',projectId:'PROJ004',urgent:true,dateNeeded:ahead(5),submittedBy:'Ramon dela Cruz',submittedAt:ts(3,10,15),status:'Pending',remarks:'Urgent — rainy season; need cement before weekend',bossApproved:false,financeApproved:false,siteLocation:'Basement footing Grid B',auditTrail:[{action:'Created',by:'Ramon dela Cruz',at:ts(3,10,15),note:'Ticket created.'}],
       materials:[{name:'CIVIL:CEMENT TYPE I 40KG',requestedQty:20,unit:'BAGS',fulfilledQty:0,remainingQty:20,brand:'Holcim'},{name:'PLUMBING:PVC PIPE 2 INCH',requestedQty:5,unit:'LEN',fulfilledQty:0,remainingQty:5,brand:'Neltex'}]},
-    {id:'TKT003',no:'TKT-2025-003',pm:'Jose Cruz',project:'GF Reception Area',projectId:'PROJ005',urgent:false,dateNeeded:'2025-05-25',submittedBy:'Carlos Reyes',submittedAt:'2025-05-08T14:00:00',status:'Completed',remarks:'',bossApproved:false,financeApproved:false,auditTrail:[{action:'Created',by:'Carlos Reyes',at:'2025-05-08T14:00:00',note:'Ticket created.'}],
+    {id:'TKT003',no:'TKT-2026-003',pm:'Jose Cruz',project:'GF Reception Area',projectId:'PROJ005',urgent:false,dateNeeded:ahead(20),submittedBy:'Jose Cruz',submittedAt:ts(14,14,0),status:'Completed',remarks:'Paint and plywood delivered',bossApproved:false,financeApproved:false,siteLocation:'GF lobby',auditTrail:[{action:'Created',by:'Jose Cruz',at:ts(14,14,0),note:'Ticket created.'}],
       materials:[{name:'FINISHING:PAINT WHITE LATEX 4L',requestedQty:8,unit:'GAL',fulfilledQty:8,remainingQty:0,brand:'Davies'},{name:'CIVIL:PLYWOOD 3/4 MARINE',requestedQty:5,unit:'SHT',fulfilledQty:5,remainingQty:0,brand:'Generic'}]},
-    {id:'TKT004',no:'TKT-2025-004',pm:'Marco Rivera',project:'Maxicare Pulilan — 3F Renovation',projectId:'PROJ001',urgent:false,dateNeeded:'2025-06-01',submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:'2025-05-28T09:00:00',status:'Pending Override',remarks:'Awaiting billing override',bossApproved:false,financeApproved:false,
-      auditTrail:[{action:'Created',by:'Marco Rivera',at:'2025-05-28T09:00:00',note:'Ticket created.'},{action:'Entry gate blocked',by:'Liza Mercado',at:'2025-05-28T09:15:00',note:'Billing gate blocked — no paid invoice for Maxicare Pulilan — 3F Renovation'}],
+    {id:'TKT004',no:'TKT-2026-004',pm:'Marco Rivera',project:'Maxicare Pulilan — 3F Renovation',projectId:'PROJ001',urgent:true,dateNeeded:ahead(7),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(2,9,0),status:'Pending Override',remarks:'THHN wire — no mobilization billed yet',bossApproved:false,financeApproved:false,siteLocation:'3F electrical room',
+      auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(2,9,0),note:'Ticket created.'},{action:'Entry gate blocked',by:'Liza Mercado',at:ts(2,9,15),note:'Billing gate blocked — no paid invoice for Maxicare Pulilan — 3F Renovation'}],
       materials:[{name:'ELECTRICAL:ROYAL CORD THHN 5.5mm2 - BLACK',requestedQty:10,unit:'PCS',fulfilledQty:0,remainingQty:10,brand:'Royal Cord'}]},
+    {id:'TKT005',no:'TKT-2026-005',pm:'Marco Rivera',project:'Smilee Monumento — Interior Fit-out',projectId:'PROJ002',urgent:false,dateNeeded:ahead(10),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(1,11,20),status:'Pending',remarks:'Dental operatory fit-out — PVC rough-in',bossApproved:false,financeApproved:false,siteLocation:'Ground floor, operatory wing',auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(1,11,20),note:'Ticket created.'}],
+      materials:[{name:'PLUMBING:PVC PIPE 2 INCH',requestedQty:12,unit:'LEN',fulfilledQty:0,remainingQty:12,brand:'Neltex'},{name:'PLUMBING:PVC ELBOW 90deg 50mm',requestedQty:24,unit:'PCS',fulfilledQty:0,remainingQty:24,brand:'Neltex'}]},
+    {id:'TKT006',no:'TKT-2026-006',pm:'Marco Rivera',project:'Residential Complex Phase 1',projectId:'PROJ003',urgent:false,dateNeeded:ahead(14),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(4,8,45),status:'Pending Override',remarks:'Awaiting finance sign-off',bossApproved:true,financeApproved:false,siteLocation:'Tower A, 5F MEP',auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(4,8,45),note:'Ticket created.'},{action:'Entry gate blocked',by:'Liza Mercado',at:ts(4,9,0),note:'Billing gate blocked — no paid invoice for Residential Complex Phase 1'},{action:'Boss approved',by:'Ricardo Santos',at:ts(3,16,30),note:'Override approved by Ricardo Santos'}],
+      materials:[{name:'ELECTRICAL:GT_CONDUIT_HANGER 3/4',requestedQty:80,unit:'PCS',fulfilledQty:0,remainingQty:80,brand:'Generic'}]},
   ],
   purchase_orders: [
-    {id:'PO001',no:'RS2025_0041',vendor:'Conduit Pro Supply Co.',supplierId:'SUP001',project:'Maxicare Pulilan — 3F Renovation',pm:'Jose Cruz',date:'2025-05-10',terms:30,dueDate:'2025-06-09',status:'Pending',remarks:'Rush order',
+    {id:'PO001',no:'RS2026_0041',vendor:'Conduit Pro Supply Co.',supplierId:'SUP001',project:'Maxicare Pulilan — 3F Renovation',pm:'Jose Cruz',date:ago(6),terms:30,dueDate:ahead(24),status:'Pending',remarks:'Rush order — 3F electrical',
       items:[
         {desc:'EMT Straight Connector 1/2"',qty:200,unit:'PCS',unitPrice:13.50,project:'Maxicare Pulilan — 3F Renovation',whOrderNo:'MAY_005'},
         {desc:'EMT Coupling 1/2"',qty:150,unit:'PCS',unitPrice:13.50,project:'Maxicare Pulilan — 3F Renovation',whOrderNo:'MAY_005'},
       ],createdBy:'Benito Navarro'},
-    {id:'PO002',no:'RS2025_0040',vendor:'Holcim Philippines Inc.',supplierId:'SUP002',project:'Phase 2 Foundation',pm:'Ramon dela Cruz',date:'2025-05-08',terms:60,dueDate:'2025-07-07',status:'Received',remarks:'',
+    {id:'PO002',no:'RS2026_0040',vendor:'Holcim Philippines Inc.',supplierId:'SUP002',project:'Phase 2 Foundation',pm:'Ramon dela Cruz',date:ago(12),terms:60,dueDate:ahead(48),status:'Received',remarks:'Cement batch delivered',
       items:[{desc:'Cement Type I 40KG',qty:100,unit:'BAGS',unitPrice:275,project:'Phase 2 Foundation',whOrderNo:'GV_P2'}],createdBy:'Benito Navarro'},
-    {id:'PO003',no:'RS2025_0039',vendor:'Pag-asa Steel Corp.',supplierId:'SUP003',project:'Phase 2 Foundation',pm:'Ramon dela Cruz',date:'2025-05-05',terms:45,dueDate:'2025-06-19',status:'Pending',remarks:'Confirm rebar diameter before delivery',
+    {id:'PO003',no:'RS2026_0039',vendor:'Pag-asa Steel Corp.',supplierId:'SUP003',project:'Phase 2 Foundation',pm:'Ramon dela Cruz',date:ago(4),terms:45,dueDate:ahead(41),status:'Pending',remarks:'Confirm rebar diameter before delivery',
       items:[
         {desc:'Deformed Bar 12mm x 6m',qty:50,unit:'LEN',unitPrice:370,project:'Phase 2 Foundation',whOrderNo:'GV_P2'},
         {desc:'Deformed Bar 16mm x 6m',qty:20,unit:'LEN',unitPrice:665,project:'Phase 2 Foundation',whOrderNo:'GV_P2'},
       ],createdBy:'Benito Navarro'},
-    {id:'PO004',no:'RS2025_0038',vendor:'Davies Paints PH',supplierId:'SUP004',project:'GF Reception Area',pm:'Jose Cruz',date:'2025-05-01',terms:30,dueDate:'2025-05-31',status:'Approved',remarks:'',
+    {id:'PO004',no:'RS2026_0038',vendor:'Davies Paints PH',supplierId:'SUP004',project:'GF Reception Area',pm:'Jose Cruz',date:ago(18),terms:30,dueDate:ahead(12),status:'Approved',remarks:'Paint for GF reception',
       items:[{desc:'White Latex Paint 4L',qty:20,unit:'GAL',unitPrice:540,project:'GF Reception Area',whOrderNo:'MCH_GF'}],createdBy:'Benito Navarro'},
   ],
   billing_records: [
-    {id:'BL001',company:'GreenVista Development Corp.',project:'Residential Complex Phase 1',projectId:'PROJ003',contractAmount:12500000,taxType:'VAT',ewtRate:2,tin:'123-456-789-000',status:'active',createdAt:'2025-01-15'},
-    {id:'BL002',company:'Metro Commercial Holdings Inc.',project:'Office Tower Interior Fit-out',projectId:null,projectIdNote:'No matching project found in DB.projects.',contractAmount:8750000,taxType:'VAT',ewtRate:2,tin:'987-654-321-000',status:'active',createdAt:'2025-02-01'},
-    {id:'BL003',company:'Quezon City LGU',project:'Public Market Renovation',projectId:null,projectIdNote:'No matching project found in DB.projects.',contractAmount:5000000,taxType:'NON-VAT',ewtRate:0,tin:'000-000-000-LGU',status:'active',createdAt:'2025-03-10'},
+    {id:'BL001',company:'GreenVista Development Corp.',project:'Residential Complex Phase 1',projectId:'PROJ003',contractAmount:12500000,taxType:'VAT',ewtRate:2,tin:'123-456-789-000',status:'active',createdAt:ago(120)},
+    {id:'BL002',company:'Metro Commercial Holdings Inc.',project:'Office Tower Interior Fit-out',projectId:null,projectIdNote:'No matching project found in DB.projects.',contractAmount:8750000,taxType:'VAT',ewtRate:2,tin:'987-654-321-000',status:'active',createdAt:ago(90)},
+    {id:'BL003',company:'Quezon City LGU',project:'Public Market Renovation',projectId:null,projectIdNote:'No matching project found in DB.projects.',contractAmount:5000000,taxType:'NON-VAT',ewtRate:0,tin:'000-000-000-LGU',status:'active',createdAt:ago(60)},
+    {id:'BL004',company:'Maxicare Healthcare Corp.',project:'Maxicare Pulilan — 3F Renovation',projectId:'PROJ001',contractAmount:8500000,taxType:'VAT',ewtRate:2,tin:'555-666-777-000',status:'active',createdAt:ago(45)},
+    {id:'BL005',company:'Smilee Dental Group',project:'Smilee Monumento — Interior Fit-out',projectId:'PROJ002',contractAmount:4200000,taxType:'VAT',ewtRate:2,tin:'888-999-000-000',status:'active',createdAt:ago(30)},
   ],
   billing_invoices: [
-    {id:'BI001',recordId:'BL001',invoiceNo:'INV-001',invoiceDate:'2025-02-15',dueDate:'2025-03-15',desc:'15% Mobilization Fee',baseAmount:1875000,ewtRate:2,dedAmt:0,status:'Paid',paidDate:'2025-03-10'},
-    {id:'BI002',recordId:'BL001',invoiceNo:'INV-002',invoiceDate:'2025-03-20',dueDate:'2025-04-20',desc:'25% Progress Billing - Structural Works',baseAmount:3125000,ewtRate:2,dedAmt:0,status:'Paid',paidDate:'2025-04-18'},
-    {id:'BI003',recordId:'BL001',invoiceNo:'INV-003',invoiceDate:'2025-04-25',dueDate:'2025-05-25',desc:'20% Progress Billing - MEP Rough-in',baseAmount:2500000,ewtRate:2,dedAmt:25000,status:'Unpaid',paidDate:''},
-    {id:'BI004',recordId:'BL002',invoiceNo:'INV-001',invoiceDate:'2025-02-28',dueDate:'2025-03-28',desc:'30% Downpayment',baseAmount:2625000,ewtRate:2,dedAmt:0,status:'Paid',paidDate:'2025-03-25'},
-    {id:'BI005',recordId:'BL002',invoiceNo:'INV-002',invoiceDate:'2025-04-10',dueDate:'2025-05-10',desc:'30% Progress - Partition Works',baseAmount:2625000,ewtRate:2,dedAmt:0,status:'Unpaid',paidDate:''},
-    {id:'BI006',recordId:'BL003',invoiceNo:'INV-001',invoiceDate:'2025-04-01',dueDate:'2025-04-30',desc:'50% Mobilization & Site Clearing',baseAmount:2500000,ewtRate:0,dedAmt:0,status:'Paid',paidDate:'2025-04-28'},
+    {id:'BI001',recordId:'BL001',invoiceNo:'INV-001',invoiceDate:ago(75),dueDate:ago(45),desc:'15% Mobilization Fee',baseAmount:1875000,ewtRate:2,dedAmt:0,status:'Paid',paidDate:ago(50)},
+    {id:'BI002',recordId:'BL001',invoiceNo:'INV-002',invoiceDate:ago(50),dueDate:ago(20),desc:'25% Progress Billing - Structural Works',baseAmount:3125000,ewtRate:2,dedAmt:0,status:'Paid',paidDate:ago(22)},
+    {id:'BI003',recordId:'BL001',invoiceNo:'INV-003',invoiceDate:ago(15),dueDate:ahead(15),desc:'20% Progress Billing - MEP Rough-in',baseAmount:2500000,ewtRate:2,dedAmt:25000,status:'Unpaid',paidDate:''},
+    {id:'BI004',recordId:'BL002',invoiceNo:'INV-001',invoiceDate:ago(60),dueDate:ago(30),desc:'30% Downpayment',baseAmount:2625000,ewtRate:2,dedAmt:0,status:'Paid',paidDate:ago(32)},
+    {id:'BI005',recordId:'BL002',invoiceNo:'INV-002',invoiceDate:ago(25),dueDate:ahead(5),desc:'30% Progress - Partition Works',baseAmount:2625000,ewtRate:2,dedAmt:0,status:'Unpaid',paidDate:''},
+    {id:'BI006',recordId:'BL003',invoiceNo:'INV-001',invoiceDate:ago(40),dueDate:ago(10),desc:'50% Mobilization & Site Clearing',baseAmount:2500000,ewtRate:0,dedAmt:0,status:'Paid',paidDate:ago(12)},
+    {id:'BI007',recordId:'BL004',invoiceNo:'INV-001',invoiceDate:ago(20),dueDate:ahead(10),desc:'20% Mobilization',baseAmount:1700000,ewtRate:2,dedAmt:0,status:'Unpaid',paidDate:''},
+    {id:'BI008',recordId:'BL005',invoiceNo:'INV-001',invoiceDate:ago(18),dueDate:ahead(12),desc:'30% Downpayment',baseAmount:1260000,ewtRate:2,dedAmt:0,status:'Paid',paidDate:ago(14)},
+    {id:'BI009',recordId:'BL005',invoiceNo:'INV-002',invoiceDate:ago(5),dueDate:ahead(25),desc:'20% Progress - Rough-in',baseAmount:840000,ewtRate:2,dedAmt:0,status:'Unpaid',paidDate:''},
   ],
   subcontractors: [
     {id:'SC001',name:'Mendoza Electrical Works',trade:'Electrical',contractAmount:2800000,project:'Residential Complex Phase 1',contact:'Joven Mendoza - 09171234567',
@@ -274,20 +351,31 @@ let DB = {
       deductions:[{id:'SD002',date:'2025-04-10',desc:'Retention 10%',amount:126000}]},
   ],
   expenses: [
-    {id:'EX001',date:'2025-05-08',category:'Materials',payee:'Holcim Philippines',sino:'SI-4521',project:'Phase 2 Foundation',particulars:'Cement 50 Bags',amount:14250,paymentType:'Check',status:'Released',remarks:''},
-    {id:'EX002',date:'2025-05-09',category:'Labor',payee:'RSCI Payroll',sino:'',project:'Maxicare Pulilan — 3F Renovation',particulars:'Weekly labor - 10 workers',amount:35000,paymentType:'Cash',status:'Released',remarks:'Week ending May 9'},
-    {id:'EX003',date:'2025-05-10',category:'Equipment',payee:'PowerTool Rentals Inc.',sino:'OR-1892',project:'Phase 2 Foundation',particulars:'Scaffold rental 2 weeks',amount:12500,paymentType:'Bank Transfer',status:'Released',remarks:''},
-    {id:'EX004',date:'2025-05-11',category:'Professional Fees',payee:'Arch. David Sarmiento',sino:'OR-305',project:'GF Reception Area',particulars:'Design consultation',amount:25000,paymentType:'Check',status:'Pending',remarks:''},
-    {id:'EX005',date:'2025-05-12',category:'Transportation',payee:'Logistics Express',sino:'OR-8821',project:'Phase 2 Foundation',particulars:'Rebar delivery - Pag-asa to site',amount:8500,paymentType:'Cash',status:'Released',remarks:''},
+    {id:'EX001',date:ago(7),category:'Materials',payee:'Holcim Philippines',sino:'SI-4521',project:'Phase 2 Foundation',particulars:'Cement 50 Bags',amount:14250,paymentType:'Check',status:'Released',remarks:''},
+    {id:'EX002',date:ago(6),category:'Labor',payee:'RSCI Payroll',sino:'',project:'Maxicare Pulilan — 3F Renovation',particulars:'Weekly labor - 10 workers',amount:35000,paymentType:'Cash',status:'Released',remarks:'Week ending'},
+    {id:'EX003',date:ago(5),category:'Equipment',payee:'PowerTool Rentals Inc.',sino:'OR-1892',project:'Phase 2 Foundation',particulars:'Scaffold rental 2 weeks',amount:12500,paymentType:'Bank Transfer',status:'Released',remarks:''},
+    {id:'EX004',date:ago(4),category:'Professional Fees',payee:'Arch. David Sarmiento',sino:'OR-305',project:'GF Reception Area',particulars:'Design consultation',amount:25000,paymentType:'Check',status:'Pending',remarks:''},
+    {id:'EX005',date:ago(3),category:'Transportation',payee:'Logistics Express',sino:'OR-8821',project:'Phase 2 Foundation',particulars:'Rebar delivery - Pag-asa to site',amount:8500,paymentType:'Cash',status:'Released',remarks:''},
   ],
   vendors: [
     {id:'V001',name:'Conduit Pro Supply Co.',tin:'111-222-333-000',address:'Quezon Avenue, QC'},
     {id:'V002',name:'Holcim Philippines Inc.',tin:'444-555-666-000',address:'Makati City'},
   ],
-  system_logs: [],
-  notifications: [],
+  system_logs: [
+    {id:'SL001',dt:ts(0,8,0),user:'Liza Mercado',action:'Billing gate',entity:'TKT-2026-004',details:'PO conversion blocked — Pending Override',status:'success'},
+    {id:'SL002',dt:ts(3,16,30),user:'Ricardo Santos',action:'Override approved',entity:'TKT-2026-006',details:'Boss approval recorded',status:'success'},
+    {id:'SL003',dt:ts(1,14,0),user:'Benito Navarro',action:'PO approved',entity:'RS2025_0041',details:'Pending PO sent to vendor',status:'success'},
+  ],
+  notifications: [
+    {id:'N001',dt:ts(0,7,30),type:'orange',title:'Override needed',text:'TKT-2026-004 blocked at billing gate — Boss & Finance approval required.',roles:['boss','accountant','po_officer'],source:'billing-gate'},
+    {id:'N002',dt:ts(1,11,25),type:'blue',title:'New engineer request',text:'Marco Rivera submitted TKT-2026-005 for Smilee Monumento.',roles:['po_officer','admin'],source:'ticket'},
+    {id:'N003',dt:ts(3,16,35),type:'green',title:'Boss approved override',text:'TKT-2026-006 awaiting Finance approval.',roles:['accountant'],source:'override'},
+    {id:'N004',dt:ts(0,6,0),type:'red',title:'Low stock alert',text:'3 inventory items at or below minimum.',roles:['inventory_manager','admin'],source:'inventory'},
+  ],
   po_release_queue: [],
-};
+  };
+}
+let DB = cloneInitialDB();
 
 // ── INIT ──────────────────────────────────────────────────────
 function buildDatalist() {
@@ -316,6 +404,7 @@ function buildDatalist() {
   // inventory log project filter
   const logProjectFilter = document.getElementById('log-project-filter');
   if(logProjectFilter) logProjectFilter.innerHTML = `<option value="">All Projects</option>` + DB.projects.map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+  initDemoLoginUI();
 }
 
 function initLandingBindings() {
@@ -359,15 +448,31 @@ function pickRole(btn) {
 
 function onDemoToggle() {
   const enabled = document.getElementById('demo-mode')?.checked;
+  const pass = document.getElementById('login-pass');
+  const hint = document.getElementById('demo-pass-hint');
   if(enabled) {
     const u = DEMO_USERS[_selectedRole];
     if(u) document.getElementById('login-email').value = u.email;
+    if(pass) pass.value = DEMO_PASSWORD;
   } else {
     document.getElementById('login-email').value = '';
+    if(pass) pass.value = '';
   }
+  if(hint) hint.style.display = enabled ? 'block' : 'none';
 }
 
 function doLogin() {
+  const err = document.getElementById('login-err');
+  const demoOn = document.getElementById('demo-mode')?.checked;
+  const pass = (document.getElementById('login-pass')?.value || '').trim();
+  if(demoOn && pass !== DEMO_PASSWORD) {
+    if(err) err.textContent = `Use demo password: ${DEMO_PASSWORD}`;
+    return;
+  }
+  if(err) err.textContent = '';
+  try {
+    sessionStorage.setItem('rsci_demo_session', demoOn ? '1' : '0');
+  } catch(e) {}
   const btn = document.getElementById('login-btn');
   btn.disabled = true; btn.textContent = 'Signing in…';
   setTimeout(()=>{
@@ -475,6 +580,7 @@ function setupApp() {
   buildDatalist();
   updateInvPill();
   buildNotifications();
+  showDemoPresentBar();
 
   // Navigate to default page
   const defaults = {
@@ -533,7 +639,7 @@ function navigate(page, btn) {
   if(page==='inv-dashboard')   renderDashboard();
   if(page==='inv-all')         renderInventoryTable();
   if(page==='inv-log')         renderLog();
-  if(page==='inv-stock-in')    { document.getElementById('si-date').value=today(); }
+  if(page==='inv-stock-in')    { document.getElementById('si-date').value=today(); if(isDemoSession()) prefillStockInDemo(); }
   if(page==='inv-stock-out')   { document.getElementById('so-date').value=today(); }
   if(page==='projects')        { projectsGoTab('list', document.querySelector('#projects-tab-nav .exp-sub-btn')); renderProjectsList(); }
   if(page==='suppliers')       renderSuppliersList();
@@ -795,6 +901,40 @@ function initNewTicket() {
   document.getElementById('nt-urg').checked=false;
   document.getElementById('nt-remarks').value='';
   addMatRow();
+  if(isDemoSession()) fillSampleTicketForm();
+}
+
+function prefillStockInDemo() {
+  const d=document.getElementById('si-date'); if(d) d.value=today();
+  const item=document.getElementById('si-item'); if(item) item.value='PLUMBING:PVC PIPE 2 INCH';
+  const qty=document.getElementById('si-qty'); if(qty) qty.value='20';
+  const sup=document.getElementById('si-supplier'); if(sup) sup.value='Neltex Development Co.';
+  const rem=document.getElementById('si-remarks'); if(rem) rem.value='Demo receipt DR-2026-0142 — warehouse delivery';
+}
+
+function fillSampleTicketForm() {
+  const sel=document.getElementById('nt-pn');
+  const assigned=_currentUser?.assignedProjectIds||['PROJ002'];
+  const projId=assigned.includes('PROJ002')?'PROJ002':assigned[0];
+  if(sel&&projId) { sel.value=projId; onTicketProjectChange(); }
+  const site=document.getElementById('nt-site');
+  if(site) site.value='Ground floor, operatory wing';
+  const dn=document.getElementById('nt-date-needed');
+  if(dn) dn.value=addDays(today(),10);
+  const urg=document.getElementById('nt-urg');
+  if(urg) urg.checked=false;
+  const rem=document.getElementById('nt-remarks');
+  if(rem) rem.value='Demo request — PVC rough-in for dental operatory';
+  if(matRows.length) {
+    const id=matRows[0];
+    const n=document.getElementById('matn-'+id);
+    const q=document.getElementById('matq-'+id);
+    const u=document.getElementById('matu-'+id);
+    if(n) n.value='PLUMBING:PVC PIPE 2 INCH';
+    if(q) q.value='8';
+    if(u) u.value='LEN';
+  }
+  toast('Sample values loaded — edit or submit.','ok');
 }
 
 function onTicketProjectChange() {
@@ -1454,6 +1594,7 @@ function initPOForm(wrapId) {
   const projectOptions=DB.projects.map(p=>`<option value="${esc(p.name)}">`).join('');
 
   wrap.innerHTML=`
+    ${isDemoSession()?`<div class="demo-form-banner"><span>Prototype demo — forms are fully functional.</span><button type="button" class="btn btn-ol btn-sm" onclick="fillSamplePOForm()">Load sample PO</button></div>`:''}
     <div class="fr2">
       <div class="fl">
         <div class="form-lbl">PO Number <span style="color:var(--rd);">*</span></div>
@@ -1504,6 +1645,39 @@ function initPOForm(wrapId) {
   poUpdateDueDate();
   addPOLineItem();
   if(_pendingTicketConversion) prefillPOFromTicket(_pendingTicketConversion);
+  else if(isDemoSession()) setTimeout(fillSamplePOForm, 80);
+}
+
+function fillSamplePOForm() {
+  if(_pendingTicketConversion) {
+    toast('Ticket data already loaded for this PO.','ok');
+    return;
+  }
+  poLineItems.slice().forEach(id=>document.getElementById('poli-'+id)?.remove());
+  poLineItems=[];
+  addPOLineItem();
+  const id=poLineItems[0];
+  if(!id) return;
+  const set=(suffix,val)=>{const el=document.getElementById('pol'+suffix+'-'+id)||document.getElementById('po-f-'+suffix);if(el)el.value=val;};
+  const desc=document.getElementById('polid-'+id);
+  if(desc) { desc.value='PLUMBING:PVC PIPE 2 INCH'; updatePOItemStatus(id); }
+  const qty=document.getElementById('poliq-'+id); if(qty) qty.value='12';
+  const unit=document.getElementById('poliu-'+id); if(unit) unit.value='LEN';
+  const proj=document.getElementById('polipj-'+id);
+  if(proj) proj.value='Smilee Monumento — Interior Fit-out';
+  const wh=document.getElementById('polwh-'+id); if(wh) wh.value='MAY_006';
+  const supSel=document.getElementById('polsup-'+id);
+  if(supSel) {
+    const neltex=[...supSel.options].find(o=>o.textContent.includes('Neltex'));
+    if(neltex) supSel.value=neltex.value;
+    else if(supSel.options.length>1) supSel.selectedIndex=1;
+    updatePOLineItemPriceFromSupplier(id);
+  }
+  const pm=document.getElementById('po-f-pm'); if(pm) pm.value='Marco Rivera';
+  const whb=document.getElementById('po-f-warehouse'); if(whb) whb.value='Danny Pascual';
+  const rem=document.getElementById('po-f-remarks'); if(rem) rem.value='Demo PO — Smilee operatory PVC rough-in';
+  calcPOTotal();
+  toast('Sample PO loaded — review and submit.','ok');
 }
 
 function poOnSupplierChange() {
