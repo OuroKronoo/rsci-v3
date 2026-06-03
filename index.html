@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RSCI — Operations Management System</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="rsci.css">
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════
+     LANDING / LOGIN
+════════════════════════════════════════════ -->
+<div id="screen-landing">
+  <div class="land-hero">
+    <div class="land-left">
+      <div class="land-logo">
+        <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      </div>
+      <div class="co-name">Rivera-Sarvida Construction Inc.</div>
+      <div class="co-tagline">Operations Management System</div>
+      <button class="land-btn" onclick="document.getElementById('login-anchor').scrollIntoView({behavior:'smooth'})">Sign In to System</button>
+    </div>
+    <div class="land-desc">
+      <strong style="color:var(--mg);font-family:'Syne',sans-serif;font-size:15px;">Integrated Operations Platform</strong><br><br>
+      A unified system for managing Materials Ticketing, Inventory, Subcontractors, Customer Billing, Purchase Orders and General Expenses — built exclusively for RSCI personnel.
+      <div class="land-modules">
+        <div class="land-mod">📋 Ticketing<span>Material requests</span></div>
+        <div class="land-mod">📦 Inventory<span>Stock management</span></div>
+        <div class="land-mod">🧾 Billing<span>Customer invoices</span></div>
+        <div class="land-mod">🛒 Purchase Orders<span>Procurement</span></div>
+        <div class="land-mod">👷 Subcontractors<span>Contract tracking</span></div>
+        <div class="land-mod">💰 Expenses<span>General ledger</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="land-label" id="login-anchor">Sign In</div>
+  <div class="login-sec">
+    <div class="login-box">
+      <div class="login-title">Welcome Back</div>
+      <div class="login-hint">Select your role (enable demo mode to auto-fill credentials)</div>
+      <div class="rp-label">I am a…</div>
+      <div class="role-picker" id="role-picker">
+        <button class="rp-btn active" data-role="admin" onclick="pickRole(this)">Admin</button>
+        <button class="rp-btn" data-role="accountant" onclick="pickRole(this)">Accountant</button>
+        <button class="rp-btn" data-role="po_officer" onclick="pickRole(this)">PO Officer</button>
+        <button class="rp-btn" data-role="engineer" onclick="pickRole(this)">Engineer</button>
+        <button class="rp-btn" data-role="inventory_manager" onclick="pickRole(this)">Inventory Mgr</button>
+        <button class="rp-btn" data-role="boss" onclick="pickRole(this)">Boss</button>
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:rgba(255,255,255,.5);">
+        <label style="display:inline-flex;align-items:center;gap:8px;"><input type="checkbox" id="demo-mode" onchange="onDemoToggle()"> Enable demo mode (auto-fill credentials)</label>
+      </div>
+      <div class="lf">
+        <label>Company Email</label>
+        <input type="email" id="login-email" value="" placeholder="yourname@rsconstruction.com" autocomplete="email">
+      </div>
+      <div class="lf">
+        <label>Password</label>
+        <input type="password" id="login-pass" value="" placeholder="Enter your password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+      </div>
+      <button class="login-sub" id="login-btn" onclick="doLogin()">Sign In</button>
+      <div class="login-err" id="login-err"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     APP
+════════════════════════════════════════════ -->
+<div id="screen-app">
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
+  <div class="sidebar" id="sidebar">
+    <div class="sb-head">
+      <div class="sb-logo-row">
+        <div class="sb-icon"><svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg></div>
+        <div>
+          <div class="sb-co">Rivera-Sarvida<br>Construction</div>
+        </div>
+      </div>
+      <div class="sb-sub" id="sb-sub">Operations System</div>
+      <div class="sb-badge" id="sb-badge">–</div>
+    </div>
+    <div class="sb-nav" id="sb-nav"></div>
+    <div class="sb-foot">
+      <div class="sb-user-row">
+        <div class="sb-avatar" id="sb-avatar">–</div>
+        <div>
+          <div class="sb-uname" id="sb-uname">–</div>
+          <div class="sb-urole" id="sb-urole">–</div>
+        </div>
+      </div>
+      <div class="logout-lnk" onclick="doLogout()">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
+        Log out
+      </div>
+    </div>
+  </div>
+
+  <div class="main-area">
+    <div class="topbar">
+      <button class="hamburger" onclick="toggleSidebar()" aria-label="Menu">
+        <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+      </button>
+      <div class="tb-title" id="tb-title">Dashboard</div>
+      <div class="tb-right">
+        <div class="tb-pill ok" id="inv-pill">
+          <span class="pulse"></span>
+          <span id="inv-pill-txt">Stock OK</span>
+        </div>
+        <button class="notif-btn" onclick="toggleNotifPanel()" title="Notifications">
+          <svg viewBox="0 0 24 24"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
+          <div class="notif-dot"></div>
+        </button>
+        <div class="tb-user" id="tb-user"></div>
+      </div>
+    </div>
+
+    <!-- Notification Panel -->
+    <div class="notif-panel" id="notif-panel">
+      <div class="notif-head">🔔 Notifications</div>
+      <div id="notif-list"></div>
+    </div>
+
+    <!-- ── PAGES ── -->
+
+    <!-- MATERIAL TICKETS DASHBOARD -->
+    <div class="page active" id="page-emp-dashboard">
+      <div class="sec-hdr">
+        <div class="sec-title">My Tickets</div>
+        <button class="btn btn-mg btn-sm" onclick="navigate('emp-new-ticket')">+ Submit Ticket</button>
+      </div>
+      <div class="panel-wrap">
+        <div class="panel-inner">
+          <div class="panel-side">
+            <button class="side-submit-btn" onclick="navigate('emp-new-ticket')">SUBMIT A TICKET</button>
+            <div class="side-info">Request materials for your project. Your ticket is reviewed by the Accountant/Admin.</div>
+          </div>
+          <div class="panel-content">
+            <div id="emp-ticket-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MATERIAL TICKET SUBMISSION -->
+    <div class="page" id="page-emp-new-ticket">
+      <div class="sec-lbl">SUBMIT A MATERIAL TICKET</div>
+      <div class="panel-wrap" style="margin-top:1px;">
+        <div class="panel-inner">
+          <div class="panel-side">
+            <div class="side-info">Fill in the site details and list all materials needed. Mark urgent if required within 24 hours.</div>
+          </div>
+          <div class="panel-content-lg">
+            <div class="fr2">
+              <div><div class="form-lbl">Project Manager</div><input class="fc" type="text" id="nt-pm" placeholder="Enter name"></div>
+              <div><div class="form-lbl">Project Name</div>
+                <select class="fc" id="nt-pn" onchange="onTicketProjectChange()">
+                  <option value="">Select project...</option>
+                </select>
+              </div>
+            </div>
+            <div id="nt-client-row" style="display:none;margin-bottom:14px;">
+              <div class="form-lbl">Client / Company</div>
+              <input class="fc" type="text" id="nt-client" readonly style="background:var(--paper);color:var(--soft);">
+            </div>
+            <div class="fl"><div class="form-lbl">Site / Location</div><input class="fc" type="text" id="nt-site" placeholder="Site, floor, or area inspected"></div>
+            <div class="fr2">
+              <div><div class="form-lbl">Date Needed</div><input class="fc" type="date" id="nt-date-needed"></div>
+              <div style="display:flex;flex-direction:column;justify-content:flex-end;">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 0;">
+                  <input type="checkbox" id="nt-urg" style="width:16px;height:16px;accent-color:var(--rd);">
+                  <span style="font-weight:600;color:var(--rd);font-size:13px;">⚡ Mark as Urgent</span>
+                </label>
+              </div>
+            </div>
+            <div style="border-top:1px solid var(--bd);margin:8px 0 16px;"></div>
+            <div style="font-family:'Syne',sans-serif;font-size:11px;font-weight:700;color:var(--soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;">Materials List</div>
+            <div id="mat-entries"></div>
+            <button class="add-mat-btn" onclick="addMatRow()">+ Add Material Row</button>
+            <div style="margin-top:14px;">
+              <div class="form-lbl">Remarks (optional)</div>
+              <input class="fc" type="text" id="nt-remarks" placeholder="Additional notes, site constraints, or observations">
+            </div>
+            <div style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap;">
+              <button class="btn btn-ol" onclick="navigate('emp-dashboard')">Cancel</button>
+              <button class="btn btn-mg btn-lg" onclick="submitTicket()">Submit Ticket →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MATERIAL TICKET DETAIL -->
+    <div class="page" id="page-emp-ticket-detail">
+      <div class="sec-lbl">TICKET DETAILS</div>
+      <div class="panel-wrap" style="margin-top:1px;">
+        <div class="panel-inner">
+          <div class="panel-side">
+            <button class="btn btn-ol" onclick="navigate('emp-dashboard')" style="width:100%;justify-content:center;">← Back</button>
+          </div>
+          <div class="panel-content-lg" id="emp-detail-content"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ACCOUNTANT DASHBOARD -->
+    <div class="page" id="page-acc-dashboard">
+      <div class="sec-hdr">
+        <div class="sec-title">Main Dashboard</div>
+        <div style="font-size:11.5px;color:var(--faint);" id="acc-datetime"></div>
+      </div>
+      <div class="stat-row" id="acc-stat-row">
+        <div class="stat-card bl">
+          <div class="stat-lbl">Pending P.O.s</div>
+          <div class="stat-val" id="acc-po-cnt">–</div>
+          <div class="stat-sub">Awaiting review</div>
+          <div class="stat-icon"><svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg></div>
+        </div>
+        <div class="stat-card rd">
+          <div class="stat-lbl">Low / Out Stock</div>
+          <div class="stat-val" id="acc-low-cnt">–</div>
+          <div class="stat-sub">Items needing restock</div>
+          <div class="stat-icon"><svg viewBox="0 0 24 24"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg></div>
+        </div>
+        <div class="stat-card gn">
+          <div class="stat-lbl">Total Billed (YTD)</div>
+          <div class="stat-val" id="acc-billed-val">–</div>
+          <div class="stat-sub">Customer invoices</div>
+          <div class="stat-icon"><svg viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg></div>
+        </div>
+        <div class="stat-card or">
+          <div class="stat-lbl">Pending Tickets</div>
+          <div class="stat-val" id="acc-ticket-cnt">–</div>
+          <div class="stat-sub">Unprocessed requests</div>
+          <div class="stat-icon"><svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg></div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;" id="acc-dash-cols"></div>
+    </div>
+
+    <!-- ACCOUNTANT PO INBOX -->
+    <div class="page" id="page-acc-po-inbox">
+      <div class="sec-lbl">PURCHASE ORDER INBOX</div>
+      <div class="panel-wrap" style="margin-top:1px;">
+        <div class="search-row">
+          <input class="search-inp" type="text" id="po-inbox-search" placeholder="Search PO #, vendor, project..." oninput="poRenderInbox()">
+          <select class="filter-sel" id="po-inbox-filter" onchange="poRenderInbox()">
+            <option value="all">All Statuses</option>
+            <option value="Pending">Pending</option>
+            <option value="Approved">Approved</option>
+            <option value="Received">Received</option>
+            <option value="Cancelled">Cancelled</option>
+          </select>
+        </div>
+        <div id="acc-po-inbox-content"></div>
+      </div>
+    </div>
+
+    <!-- ACCOUNTANT PO DETAIL -->
+    <div class="page" id="page-acc-po-detail">
+      <div class="sec-lbl">P.O. DETAILS</div>
+      <div class="panel-wrap" style="margin-top:1px;">
+        <div class="panel-inner">
+          <div class="panel-side-dark" id="po-detail-side">
+            <div style="font-family:'Syne',sans-serif;font-size:10px;font-weight:700;color:rgba(255,255,255,.4);letter-spacing:1px;text-transform:uppercase;margin-bottom:12px;">P.O. Info</div>
+            <div id="po-detail-side-info"></div>
+          </div>
+          <div class="panel-content-lg" id="po-detail-content"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PO OFFICER DASHBOARD -->
+    <div class="page" id="page-po-dashboard">
+      <div class="sec-hdr">
+        <div class="sec-title">PO Officer Dashboard</div>
+        <button class="btn btn-mg btn-sm" onclick="navigate('po-new-po')">+ Create P.O.</button>
+      </div>
+      <div class="stat-row">
+        <div class="stat-card bl"><div class="stat-lbl">My POs (Total)</div><div class="stat-val" id="po-stat-total">–</div></div>
+        <div class="stat-card or"><div class="stat-lbl">Pending Approval</div><div class="stat-val" id="po-stat-pending">–</div></div>
+        <div class="stat-card gn"><div class="stat-lbl">Approved</div><div class="stat-val" id="po-stat-approved">–</div></div>
+        <div class="stat-card"><div class="stat-lbl">Received</div><div class="stat-val" id="po-stat-received">–</div></div>
+      </div>
+      <div class="sec-hdr" style="margin-top:18px;">
+        <div class="sec-title" style="font-size:13px;">Engineer Requests</div>
+        <span class="badge badge-partial" id="po-req-cnt">–</span>
+      </div>
+      <div id="po-req-list"></div>
+      <div class="sec-hdr" style="margin-top:18px;">
+        <div class="sec-title" style="font-size:13px;">All Purchase Orders</div>
+        <div style="display:flex;gap:8px;">
+          <input class="search-inp" type="text" id="po-dash-search" placeholder="Search PO #, vendor..." oninput="renderPODashboard()" style="min-width:200px;">
+          <select class="filter-sel" id="po-dash-filter" onchange="renderPODashboard()">
+            <option value="all">All Status</option>
+            <option value="Pending">Pending</option>
+            <option value="Approved">Approved</option>
+            <option value="Received">Received</option>
+            <option value="Cancelled">Cancelled</option>
+          </select>
+        </div>
+      </div>
+      <div id="po-dash-list"></div>
+    </div>
+
+    <!-- PO OFFICER CREATE PO -->
+    <div class="page" id="page-req-new-po">
+      <div class="sec-lbl">CREATE PURCHASE ORDER</div>
+      <div class="panel-wrap" style="margin-top:1px;">
+        <div class="panel-inner">
+          <div class="panel-side">
+            <div class="side-info" id="po-form-side-info">Fill in vendor details and add line items. The PO will be sent to the Accountant for approval.</div>
+            <div style="margin-top:12px;">
+              <div style="font-size:9px;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Quick Tips</div>
+              <div style="font-size:11px;color:rgba(255,255,255,.5);line-height:1.8;">
+                ✦ Select a Project first<br>
+                ✦ Choose supplier to auto-fill credit terms &amp; prices<br>
+                ✦ Tag each item to a project
+              </div>
+            </div>
+          </div>
+          <div class="panel-content-lg" id="req-po-form-wrap">
+            <!-- Built by JS -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PO NEW (same page, different nav entry for po_officer) -->
+    <div class="page" id="page-po-new-po">
+      <div class="sec-lbl">CREATE PURCHASE ORDER</div>
+      <div class="panel-wrap" style="margin-top:1px;">
+        <div class="panel-inner">
+          <div class="panel-side">
+            <div class="side-info">Fill in vendor details and add line items. The PO will be sent to the Accountant for approval.</div>
+            <div style="margin-top:12px;">
+              <div style="font-size:9px;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Quick Tips</div>
+              <div style="font-size:11px;color:rgba(255,255,255,.5);line-height:1.8;">
+                ✦ Select a Project first<br>
+                ✦ Choose supplier to auto-fill credit terms &amp; prices<br>
+                ✦ Tag each item to a project
+              </div>
+            </div>
+          </div>
+          <div class="panel-content-lg" id="po-officer-form-wrap">
+            <!-- Built by JS -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PROJECTS PAGE (Admin/PO Officer) -->
+    <div class="page" id="page-projects">
+      <div class="sec-hdr">
+        <div class="sec-title">Awarded Projects</div>
+        <button class="btn btn-mg btn-sm" id="projects-add-btn" onclick="openAddProjectModal()">+ Add Project</button>
+      </div>
+      <div class="exp-sub-nav" id="projects-tab-nav">
+        <button class="exp-sub-btn active" onclick="projectsGoTab('list',this)">Project List</button>
+        <button class="exp-sub-btn" id="projects-eng-tab-btn" onclick="projectsGoTab('assignments',this)">Engineer Assignments</button>
+      </div>
+      <div id="projects-list-wrap"></div>
+      <div id="projects-assignments-wrap" style="display:none;"></div>
+    </div>
+
+    <!-- SUPPLIERS PAGE (Admin/PO Officer) -->
+    <div class="page" id="page-suppliers">
+      <div class="sec-hdr">
+        <div class="sec-title">Suppliers / Vendors</div>
+        <button class="btn btn-mg btn-sm" onclick="openAddSupplierModal()">+ Add Supplier</button>
+      </div>
+      <div id="suppliers-list-wrap"></div>
+    </div>
+
+    <!-- EXPENSES REPORT (per project) -->
+    <div class="page" id="page-expenses-report">
+      <div class="sec-hdr">
+        <div class="sec-title">Expenses Per Project Report</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <select class="filter-sel" id="exp-rpt-project" onchange="renderExpensesReport()">
+            <option value="">All Projects</option>
+          </select>
+          <input type="date" class="fc" id="exp-rpt-from" style="width:150px;" onchange="renderExpensesReport()">
+          <input type="date" class="fc" id="exp-rpt-to" style="width:150px;" onchange="renderExpensesReport()">
+          <button class="btn btn-ol btn-sm" onclick="exportExpensesReport()">Export CSV</button>
+        </div>
+      </div>
+      <div id="expenses-report-content"></div>
+    </div>
+
+    <!-- TICKET HISTORY -->
+    <div class="page" id="page-acc-history">
+      <div class="sec-hdr">
+        <div class="sec-title">Ticket History</div>
+        <div style="display:flex;gap:8px;">
+          <input type="date" class="fc" id="h-from" style="width:150px;min-width:120px;">
+          <input type="date" class="fc" id="h-to" style="width:150px;min-width:120px;">
+          <button class="btn btn-mg btn-sm" onclick="showHistList()">Filter</button>
+        </div>
+      </div>
+      <div id="hv-list"></div>
+    </div>
+
+    <!-- SYSTEM ACTIVITY LOG -->
+    <div class="page" id="page-admin-logs">
+      <div class="sec-hdr">
+        <div class="sec-title">System Activity Log</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input type="date" class="fc" id="log-f-from" style="width:150px;min-width:120px;">
+          <input type="date" class="fc" id="log-f-to" style="width:150px;min-width:120px;">
+          <input type="text" class="fc" id="log-f-search" placeholder="Search by user, action, or entity..." style="flex:1;min-width:200px;">
+          <button class="btn btn-mg btn-sm" onclick="renderActivityLog()">Filter</button>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>Date/Time</th><th>User</th><th>Action</th><th>Entity</th><th>Details</th><th>Status</th>
+          </tr></thead>
+          <tbody id="log-activity-tbody"></tbody>
+        </table>
+      </div>
+      <div style="padding:10px 16px;font-size:11.5px;color:var(--faint);" id="log-activity-count"></div>
+    </div>
+
+    <!-- SUBCONTRACTORS -->
+    <div class="page" id="page-acc-subcon">
+      <div class="sec-hdr">
+        <div class="sec-title">Subcontractors</div>
+        <button class="btn btn-mg btn-sm" onclick="openAddSubconModal()">+ Add Subcontractor</button>
+      </div>
+      <div class="dash-grid" id="subcon-layout">
+        <div>
+          <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+            <div class="card" style="flex:1;padding:14px 18px;border-top:3px solid var(--mg);">
+              <div class="stat-lbl">Total Subcons</div>
+              <div class="stat-val" style="font-size:22px;" id="sc-total-cnt">–</div>
+            </div>
+            <div class="card" style="flex:1;padding:14px 18px;border-top:3px solid var(--gn);">
+              <div class="stat-lbl">Total Contract Value</div>
+              <div class="stat-val" style="font-size:16px;letter-spacing:-1px;" id="sc-contract-val">–</div>
+            </div>
+            <div class="card" style="flex:1;padding:14px 18px;border-top:3px solid var(--or);">
+              <div class="stat-lbl">Total Billed</div>
+              <div class="stat-val" style="font-size:16px;letter-spacing:-1px;" id="sc-billed-val">–</div>
+            </div>
+          </div>
+          <div class="tbl-wrap" id="subcon-list-wrap"></div>
+        </div>
+        <div id="subcon-detail-wrap">
+          <div class="card" style="padding:40px;text-align:center;color:var(--faint);">
+            <div style="font-size:36px;margin-bottom:10px;">👷</div>
+            <div style="font-size:13px;">Select a subcontractor to view details</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- GENERAL EXPENSES -->
+    <div class="page" id="page-acc-expenses">
+      <div class="sec-hdr">
+        <div class="sec-title">General Expenses</div>
+        <button class="btn btn-mg btn-sm" onclick="openExpAddModal()">+ Add Expense</button>
+      </div>
+      <div class="exp-sub-nav">
+        <button class="exp-sub-btn active" onclick="expGoPage('list',this)">Expense List</button>
+        <button class="exp-sub-btn" onclick="expGoPage('report',this)">Summary Report</button>
+      </div>
+      <div id="exp-page-list">
+        <div class="search-row" style="background:var(--white);border:1px solid var(--bd);border-radius:var(--r-lg) var(--r-lg) 0 0;">
+          <input class="search-inp" type="text" id="exp-search" placeholder="Search payee, project, particulars..." oninput="expRenderList()">
+          <select class="filter-sel" id="exp-cat-filter" onchange="expRenderList()">
+            <option value="">All Categories</option>
+            <option>Labor</option><option>Materials</option><option>Equipment</option>
+            <option>Professional Fees</option><option>Utilities</option><option>Transportation</option><option>Others</option>
+          </select>
+        </div>
+        <div class="tbl-wrap" style="border-top:none;border-radius:0 0 var(--r-lg) var(--r-lg);">
+          <table>
+            <thead><tr>
+              <th>Date</th><th>SI/OR #</th><th>Payee</th><th>Category</th><th>Project</th><th>Amount</th><th>Payment</th><th>Status</th><th></th>
+            </tr></thead>
+            <tbody id="exp-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="exp-page-report" style="display:none;"></div>
+    </div>
+
+    <!-- CUSTOMER BILLING LIST -->
+    <div class="page" id="page-billing-list">
+      <div class="sec-hdr">
+        <div class="sec-title">Customer Billing</div>
+        <button class="btn btn-mg btn-sm" onclick="blOpenAddRecordModal()">+ New Billing Record</button>
+      </div>
+      <div id="bl-summary-cards" style="margin-bottom:18px;"></div>
+      <div class="tbl-wrap">
+        <div class="search-row" style="border-radius:var(--r-lg) var(--r-lg) 0 0;border-bottom:1px solid var(--bd);">
+          <input class="search-inp" type="text" id="bl-search" placeholder="Search company, project..." oninput="blRenderList()">
+          <select class="filter-sel" id="bl-filter" onchange="blRenderList()">
+            <option value="all">All Status</option>
+            <option value="active">Active</option>
+            <option value="settled">Settled</option>
+          </select>
+          <button class="btn btn-ol btn-sm" onclick="blExportExcel()">Export</button>
+        </div>
+        <div id="bl-list-body"></div>
+      </div>
+    </div>
+
+    <!-- CUSTOMER BILLING DETAIL -->
+    <div class="page" id="page-billing-detail">
+      <div class="sec-lbl">BILLING DETAIL</div>
+      <div class="panel-wrap" style="margin-top:1px;">
+        <div class="panel-inner">
+          <div class="panel-side-dark" id="bl-side">
+            <div style="font-family:'Syne',sans-serif;font-size:10px;font-weight:700;color:rgba(255,255,255,.4);letter-spacing:1px;text-transform:uppercase;margin-bottom:12px;">Billing Info</div>
+            <div id="bl-side-info"></div>
+          </div>
+          <div class="panel-content-lg" id="bl-detail-content"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PO OFFICER PURCHASE ORDERS -->
+    <div class="page" id="page-req-dashboard">
+      <div class="sec-hdr">
+        <div class="sec-title">My Purchase Orders</div>
+        <button class="btn btn-mg btn-sm" onclick="navigate('req-new-po')">+ Create P.O.</button>
+      </div>
+      <div class="panel-wrap">
+        <div class="panel-inner">
+          <div class="panel-side">
+            <button class="side-submit-btn" onclick="navigate('req-new-po')">CREATE P.O.</button>
+            <div class="side-info">Create purchase orders for vendors. POs are reviewed and approved by the Accountant.</div>
+          </div>
+          <div class="panel-content">
+            <div id="req-po-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- INVENTORY DASHBOARD -->
+    <div class="page" id="page-inv-dashboard">
+      <div class="stat-row" id="inv-stat-row">
+        <div class="stat-card"><div class="stat-lbl">Total Items</div><div class="stat-val" id="is-total">–</div></div>
+        <div class="stat-card gn"><div class="stat-lbl">In Stock</div><div class="stat-val" id="is-ok">–</div></div>
+        <div class="stat-card or"><div class="stat-lbl">Low Stock</div><div class="stat-val" id="is-low">–</div></div>
+        <div class="stat-card rd"><div class="stat-lbl">Out of Stock</div><div class="stat-val" id="is-out">–</div></div>
+        <div class="stat-card bl"><div class="stat-lbl">Expected Delivery</div><div class="stat-val" id="is-expected">–</div></div>
+        <div class="stat-card"><div class="stat-lbl">Expected Items</div><div class="stat-val" id="is-expected-items">–</div></div>
+      </div>
+      <div class="dash-grid">
+        <div>
+          <div class="dash-widget">
+            <div class="dash-widget-head">
+              <div class="dash-widget-title">⚠ Low / Out of Stock Alerts</div>
+              <span class="badge badge-out" id="alert-cnt">0</span>
+            </div>
+            <div class="dash-widget-body no-pad">
+              <div class="search-row" style="border-radius:0;">
+                <input class="search-inp" type="text" id="alert-search" placeholder="Search items..." oninput="renderDashboard()">
+              </div>
+              <div id="alert-list"></div>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:18px;">
+          <div class="dash-widget">
+            <div class="dash-widget-head"><div class="dash-widget-title">Recent Movements</div></div>
+            <div class="dash-widget-body no-pad" id="recent-log" style="max-height:240px;overflow-y:auto;"></div>
+          </div>
+          <div class="dash-widget">
+            <div class="dash-widget-head">
+              <div class="dash-widget-title">Upcoming Deliveries</div>
+              <span class="badge badge-bl" id="upcoming-cnt">0</span>
+            </div>
+            <div class="dash-widget-body" id="upcoming-deliveries" style="max-height:220px;overflow-y:auto;padding:10px;">No upcoming deliveries.</div>
+          </div>
+          <div class="dash-widget">
+            <div class="dash-widget-head">
+              <div class="dash-widget-title">PO Release Queue</div>
+              <span class="badge badge-partial" id="po-release-cnt">0</span>
+            </div>
+            <div class="dash-widget-body no-pad" id="po-release-queue" style="max-height:320px;overflow-y:auto;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- INVENTORY ALL ITEMS -->
+    <div class="page" id="page-inv-all">
+      <div class="tbl-wrap">
+        <div class="search-row" style="border-radius:var(--r-lg) var(--r-lg) 0 0;">
+          <input class="search-inp" type="text" id="inv-search" placeholder="Search item name, category..." oninput="renderInventoryTable()">
+          <select class="filter-sel" id="inv-filter" onchange="renderInventoryTable()">
+            <option value="all">All Status</option>
+            <option value="ok">In Stock</option>
+            <option value="low">Low Stock</option>
+            <option value="out">Out of Stock</option>
+          </select>
+          <div style="margin-left:auto;display:flex;gap:8px;">
+            <button class="btn btn-ol btn-sm" onclick="exportCSV()">Export CSV</button>
+            <button class="btn btn-mg btn-sm" onclick="openAddItem()">+ Add Item</button>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table style="min-width:640px;width:100%;border-collapse:collapse;">
+            <thead><tr>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">#</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Item Description</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Unit</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Unit Price (₱)</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Qty</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Expected 📦</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Total Avail</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Min Stock</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Status</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Brand</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);padding:10px 14px;"></th>
+            </tr></thead>
+            <tbody id="inv-tbody"></tbody>
+          </table>
+        </div>
+        <div style="padding:10px 16px;font-size:11.5px;color:var(--faint);" id="inv-count"></div>
+      </div>
+    </div>
+
+    <!-- STOCK IN -->
+    <div class="page" id="page-inv-stock-in">
+      <div class="sec-lbl" style="margin-bottom:18px;">STOCK IN — Add Received Materials</div>
+      <div class="si-panel">
+        <div class="fr2">
+          <div class="fl"><div class="form-lbl">Item</div><input class="fc" id="si-item" list="item-datalist" placeholder="Type or select item..." oninput="si_updateInfo()"><datalist id="item-datalist"></datalist></div>
+          <div class="fl"><div class="form-lbl">Quantity to Add</div><input class="fc" id="si-qty" type="number" min="1" placeholder="0"></div>
+        </div>
+        <div class="fr2">
+          <div class="fl"><div class="form-lbl">Supplier / Source</div><input class="fc" id="si-supplier" placeholder="Supplier name (optional)"></div>
+          <div class="fl"><div class="form-lbl">Date Received</div><input class="fc" id="si-date" type="date"></div>
+        </div>
+        <div class="fl"><div class="form-lbl">Remarks</div><input class="fc" id="si-remarks" placeholder="Optional notes"></div>
+        <div id="si-current-info" class="si-info-box"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-gn btn-lg" id="si-submit-btn" onclick="doStockIn()">Confirm Stock In</button>
+          <button class="btn btn-ol" onclick="clearStockIn()">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STOCK OUT -->
+    <div class="page" id="page-inv-stock-out">
+      <div class="sec-lbl" style="margin-bottom:18px;">STOCK OUT — Manual Deduction</div>
+      <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:var(--r);padding:10px 14px;font-size:12px;margin-bottom:16px;color:#856404;max-width:720px;">
+        For <strong>manual deductions only</strong>. Ticket approvals auto-deduct stock.
+      </div>
+      <div class="si-panel">
+        <div class="fr2">
+          <div class="fl"><div class="form-lbl">Item</div><input class="fc" id="so-item" list="item-datalist" placeholder="Type or select item..." oninput="so_updateInfo()"></div>
+          <div class="fl"><div class="form-lbl">Quantity to Deduct</div><input class="fc" id="so-qty" type="number" min="1" placeholder="0"></div>
+        </div>
+        <div class="fr2">
+          <div class="fl"><div class="form-lbl">Reason</div>
+            <select class="fc" id="so-reason">
+              <option value="">Select reason...</option>
+              <option>Damaged / Defective</option>
+              <option>Lost / Missing</option>
+              <option>Consumed on site</option>
+              <option>Returned to supplier</option>
+              <option>Returned to inventory (excess)</option>
+              <option>Inventory adjustment</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <div class="fl"><div class="form-lbl">Date</div><input class="fc" id="so-date" type="date"></div>
+        </div>
+        <div class="fl"><div class="form-lbl">Project / Cost Center <span style="color:var(--rd);">*</span></div><input class="fc" id="so-project-info" placeholder="e.g. Project ABC - 3F Hallway"></div>
+        <div class="fl"><div class="form-lbl">Remarks</div><input class="fc" id="so-remarks" placeholder="Optional notes"></div>
+        <div id="so-current-info" class="si-info-box"></div>
+        <button class="btn btn-mg btn-lg" id="so-submit-btn" onclick="doStockOut()">Confirm Stock Out</button>
+      </div>
+    </div>
+
+    <!-- MOVEMENT LOG -->
+    <div class="page" id="page-inv-log">
+      <div class="tbl-wrap">
+        <div class="search-row" style="border-radius:var(--r-lg) var(--r-lg) 0 0;">
+          <input class="search-inp" type="text" id="log-search" placeholder="Search item or notes..." oninput="renderLog()">
+          <select class="filter-sel" id="log-filter" onchange="renderLog()">
+            <option value="all">All Types</option>
+            <option value="in">Stock In</option>
+            <option value="out">Stock Out</option>
+            <option value="ticket">Ticket Deduction</option>
+            <option value="adjust">Adjustment</option>
+          </select>
+          <select class="filter-sel" id="log-project-filter" onchange="renderLog()">
+            <option value="">All Projects</option>
+          </select>
+          <div style="margin-left:auto;display:flex;gap:8px;">
+            <button class="btn btn-mg btn-sm" onclick="exportLogToExcel()">Export</button>
+            <button class="btn btn-ol btn-sm" onclick="clearLog()">Clear Log</button>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table style="min-width:600px;width:100%;border-collapse:collapse;">
+            <thead><tr>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Date/Time</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Type</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Item</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Project</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Qty Change</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Balance After</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Remarks</th>
+            </tr></thead>
+            <tbody id="log-tbody"></tbody>
+          </table>
+        </div>
+        <div style="padding:10px 16px;font-size:11.5px;color:var(--faint);" id="log-count"></div>
+      </div>
+    </div>
+
+    <!-- BOSS DASHBOARD -->
+    <div class="page" id="page-boss-dashboard">
+      <div class="sec-hdr">
+        <div class="sec-title">Executive Dashboard</div>
+        <div style="font-size:11.5px;color:var(--faint);" id="boss-datetime"></div>
+      </div>
+      <div class="stat-row" id="boss-stat-row">
+        <div class="stat-card bl">
+          <div class="stat-lbl">Total Projects</div>
+          <div class="stat-val" id="boss-proj-cnt">–</div>
+          <div class="stat-sub">Active projects</div>
+          <div class="stat-icon"><svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg></div>
+        </div>
+        <div class="stat-card or">
+          <div class="stat-lbl">Pending Overrides</div>
+          <div class="stat-val" id="boss-override-cnt">–</div>
+          <div class="stat-sub">Awaiting your approval</div>
+          <div class="stat-icon"><svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg></div>
+        </div>
+        <div class="stat-card gn">
+          <div class="stat-lbl">Total Billed (YTD)</div>
+          <div class="stat-val" id="boss-billed-val">–</div>
+          <div class="stat-sub">Customer invoices</div>
+          <div class="stat-icon"><svg viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg></div>
+        </div>
+        <div class="stat-card rd">
+          <div class="stat-lbl">Active POs</div>
+          <div class="stat-val" id="boss-po-cnt">–</div>
+          <div class="stat-sub">Pending + Approved</div>
+          <div class="stat-icon"><svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6z"/></svg></div>
+        </div>
+      </div>
+      <div id="boss-dash-override-section"></div>
+    </div>
+
+    <!-- BOSS OVERRIDE QUEUE -->
+    <div class="page" id="page-boss-override-queue">
+      <div class="sec-hdr">
+        <div class="sec-title">Override Queue</div>
+        <span class="badge badge-out" id="boss-oq-cnt">0</span>
+      </div>
+      <div id="boss-override-list"></div>
+    </div>
+
+    <!-- BOSS READ-ONLY PROJECTS -->
+    <div class="page" id="page-boss-projects">
+      <div class="sec-hdr"><div class="sec-title">Awarded Projects</div></div>
+      <div id="boss-projects-list-wrap"></div>
+    </div>
+
+    <!-- BOSS READ-ONLY PO LIST -->
+    <div class="page" id="page-boss-po-list">
+      <div class="sec-hdr"><div class="sec-title">Purchase Orders</div></div>
+      <div class="tbl-wrap">
+        <div class="search-row" style="border-radius:var(--r-lg) var(--r-lg) 0 0;border-bottom:1px solid var(--bd);">
+          <input class="search-inp" type="text" id="boss-po-search" placeholder="Search PO #, vendor..." oninput="renderBossPOList()">
+          <select class="filter-sel" id="boss-po-filter" onchange="renderBossPOList()">
+            <option value="all">All Status</option>
+            <option value="Pending">Pending</option>
+            <option value="Approved">Approved</option>
+            <option value="Received">Received</option>
+            <option value="Cancelled">Cancelled</option>
+          </select>
+        </div>
+        <div id="boss-po-list-body"></div>
+      </div>
+    </div>
+
+    <!-- BOSS READ-ONLY BILLING SUMMARY -->
+    <div class="page" id="page-boss-billing">
+      <div class="sec-hdr"><div class="sec-title">Billing Summary</div></div>
+      <div id="boss-billing-summary"></div>
+    </div>
+
+  </div><!-- /main-area -->
+</div><!-- /screen-app -->
+
+<!-- ═══════════════════════════════════════════
+     MODALS
+════════════════════════════════════════════ -->
+
+<!-- Add Project -->
+<div class="mo" id="mo-add-project">
+  <div class="mo-box">
+    <div class="mo-head"><div class="mo-title" id="proj-mo-title">Add Awarded Project</div><button class="mo-x" onclick="closeMo('mo-add-project')">✕</button></div>
+    <div class="mo-body">
+      <div class="fl"><div class="form-lbl">Project Name *</div><input class="fc" id="proj-f-name" placeholder="e.g. Maxicare Pulilan — 3F Renovation"></div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Client</div><input class="fc" id="proj-f-client" placeholder="Client company name"></div>
+        <div class="fl"><div class="form-lbl">WH Order No. / Code</div><input class="fc" id="proj-f-code" placeholder="e.g. MAY_005"></div>
+      </div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Contract Amount (₱)</div><input class="fc" id="proj-f-amount" type="number" min="0" placeholder="0.00"></div>
+        <div class="fl"><div class="form-lbl">Status</div>
+          <select class="fc" id="proj-f-status">
+            <option value="Active">Active</option>
+            <option value="Completed">Completed</option>
+            <option value="On Hold">On Hold</option>
+          </select>
+        </div>
+      </div>
+      <div class="fl"><div class="form-lbl">Location / Site</div><input class="fc" id="proj-f-location" placeholder="Site address"></div>
+      <div class="fl"><div class="form-lbl">Remarks</div><input class="fc" id="proj-f-remarks" placeholder="Optional notes"></div>
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-rd btn-sm" id="proj-delete-btn" style="display:none;" onclick="deleteProject()">Delete</button>
+      <button class="btn btn-ol" onclick="closeMo('mo-add-project')">Cancel</button>
+      <button class="btn btn-mg" onclick="saveProject()">Save Project</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit Supplier -->
+<div class="mo" id="mo-add-supplier">
+  <div class="mo-box mo-box-lg">
+    <div class="mo-head"><div class="mo-title" id="sup-mo-title">Add Supplier</div><button class="mo-x" onclick="closeMo('mo-add-supplier')">✕</button></div>
+    <div class="mo-body">
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Supplier Name *</div><input class="fc" id="sup-f-name" placeholder="e.g. Goldentown Supply Co."></div>
+        <div class="fl"><div class="form-lbl">Credit Terms (days)</div><input class="fc" id="sup-f-terms" type="number" min="0" placeholder="e.g. 60"></div>
+      </div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">TIN</div><input class="fc" id="sup-f-tin" placeholder="000-000-000-000"></div>
+        <div class="fl"><div class="form-lbl">Contact Person</div><input class="fc" id="sup-f-contact" placeholder="Name &amp; number"></div>
+      </div>
+      <div class="fl"><div class="form-lbl">Address</div><input class="fc" id="sup-f-address" placeholder="Supplier address"></div>
+      <div style="border-top:1px solid var(--bd);margin:14px 0 12px;"></div>
+      <div style="font-family:'Syne',sans-serif;font-size:11px;font-weight:700;color:var(--soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;">Item Prices for this Supplier</div>
+      <div style="background:var(--paper);border-radius:var(--r);padding:10px 14px;font-size:12px;color:var(--soft);margin-bottom:10px;">These prices auto-fill when this supplier is selected on a PO. Still editable per PO.</div>
+      <div id="sup-item-prices"></div>
+      <button class="add-mat-btn" onclick="addSupplierPriceRow()">+ Add Item Price</button>
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-rd btn-sm" id="sup-delete-btn" style="display:none;" onclick="deleteSupplier()">Delete</button>
+      <button class="btn btn-ol" onclick="closeMo('mo-add-supplier')">Cancel</button>
+      <button class="btn btn-mg" onclick="saveSupplier()">Save Supplier</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Inventory Item -->
+<div class="mo" id="mo-edit-item">
+  <div class="mo-box">
+    <div class="mo-head"><div class="mo-title">Edit Item</div><button class="mo-x" onclick="closeMo('mo-edit-item')">✕</button></div>
+    <div class="mo-body">
+      <div class="fl"><div class="form-lbl">Item Description</div><input class="fc" id="edit-name" readonly style="background:var(--paper);color:var(--soft);"></div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Unit Price (₱)</div><input class="fc" id="edit-price" type="number" min="0"></div>
+        <div class="fl"><div class="form-lbl">Unit of Measure</div><input class="fc" id="edit-unit"></div>
+      </div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Min. Stock Threshold</div><input class="fc" id="edit-min" type="number" min="0" placeholder="5"></div>
+        <div class="fl"><div class="form-lbl">Brand / Supplier</div><input class="fc" id="edit-brand" placeholder="e.g. Holcim, Pag-asa Steel"></div>
+      </div>
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-rd btn-sm" onclick="deleteItem()">Delete</button>
+      <button class="btn btn-ol" onclick="closeMo('mo-edit-item')">Cancel</button>
+      <button class="btn btn-mg" onclick="saveEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Inventory Item -->
+<div class="mo" id="mo-add-item">
+  <div class="mo-box">
+    <div class="mo-head"><div class="mo-title">Add New Item</div><button class="mo-x" onclick="closeMo('mo-add-item')">✕</button></div>
+    <div class="mo-body">
+      <div class="fl"><div class="form-lbl">Item Description *</div><input class="fc" id="add-name" placeholder="Full item name (e.g. PLUMBING:PVC Pipe 2 Inch)"></div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Unit Price (₱) *</div><input class="fc" id="add-price" type="number" min="0" placeholder="0.00"></div>
+        <div class="fl"><div class="form-lbl">Unit of Measure *</div>
+          <input class="fc" id="add-unit" list="uom-datalist" placeholder="PCS, BAGS, per load...">
+          <datalist id="uom-datalist">
+            <option value="PCS"><option value="BAGS"><option value="KGS"><option value="LEN"><option value="SHT"><option value="BOX">
+            <option value="GAL"><option value="LTR"><option value="CUM"><option value="per load"><option value="per trip"><option value="per elf"><option value="per bag"><option value="per cu.m">
+          </datalist>
+        </div>
+      </div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Initial Stock Qty</div><input class="fc" id="add-qty" type="number" min="0" value="0"></div>
+        <div class="fl"><div class="form-lbl">Min. Stock Threshold</div><input class="fc" id="add-min" type="number" min="0" value="5"></div>
+      </div>
+      <div class="fl"><div class="form-lbl">Brand / Supplier</div><input class="fc" id="add-brand" placeholder="e.g. Holcim, Pag-asa Steel"></div>
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-ol" onclick="closeMo('mo-add-item')">Cancel</button>
+      <button class="btn btn-mg" onclick="saveNewItem()">Add Item</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Subcontractor -->
+<div class="mo" id="mo-add-subcon">
+  <div class="mo-box">
+    <div class="mo-head"><div class="mo-title">Add Subcontractor</div><button class="mo-x" onclick="closeMo('mo-add-subcon')">✕</button></div>
+    <div class="mo-body">
+      <div class="fl"><div class="form-lbl">Company / Name *</div><input class="fc" id="sc-add-name" placeholder="Subcontractor company name"></div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Trade</div><input class="fc" id="sc-add-trade" placeholder="e.g. Electrical, Plumbing"></div>
+        <div class="fl"><div class="form-lbl">Contract Amount (₱) *</div><input class="fc" id="sc-add-contract" type="number" min="0" placeholder="0.00"></div>
+      </div>
+      <div class="fl"><div class="form-lbl">Project</div><input class="fc" id="sc-add-project" list="sc-project-datalist" placeholder="Project name"><datalist id="sc-project-datalist"></datalist></div>
+      <div class="fl"><div class="form-lbl">Contact Person</div><input class="fc" id="sc-add-contact" placeholder="Contact name and number"></div>
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-ol" onclick="closeMo('mo-add-subcon')">Cancel</button>
+      <button class="btn btn-mg" onclick="saveSubcon()">Add Subcontractor</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Billing Record -->
+<div class="mo" id="mo-add-billing">
+  <div class="mo-box">
+    <div class="mo-head"><div class="mo-title">New Billing Record</div><button class="mo-x" onclick="closeMo('mo-add-billing')">✕</button></div>
+    <div class="mo-body">
+      <div class="fl"><div class="form-lbl">Company Name *</div><input class="fc" id="bl-add-company" placeholder="Client company name"></div>
+      <div class="fl"><div class="form-lbl">Project *</div><input class="fc" id="bl-add-project" list="bl-project-datalist" placeholder="Project description"><datalist id="bl-project-datalist"></datalist></div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Contract Amount (₱) *</div><input class="fc" id="bl-add-contract" type="number" min="0" placeholder="0.00"></div>
+        <div class="fl"><div class="form-lbl">Tax Type</div>
+          <select class="fc" id="bl-add-tax">
+            <option value="VAT">VAT (12%)</option>
+            <option value="NON-VAT">Non-VAT</option>
+          </select>
+        </div>
+      </div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">TIN</div><input class="fc" id="bl-add-tin" placeholder="000-000-000-000"></div>
+        <div class="fl"><div class="form-lbl">EWT Rate (%)</div><input class="fc" id="bl-add-ewt" type="number" min="0" placeholder="2"></div>
+      </div>
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-ol" onclick="closeMo('mo-add-billing')">Cancel</button>
+      <button class="btn btn-mg" onclick="blSaveRecord()">Add Record</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Invoice -->
+<div class="mo" id="mo-add-invoice">
+  <div class="mo-box mo-box-lg">
+    <div class="mo-head"><div class="mo-title" id="inv-mo-title">Add Invoice</div><button class="mo-x" onclick="closeMo('mo-add-invoice')">✕</button></div>
+    <div class="mo-body">
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Invoice No.</div><input class="fc" id="blinv-no" placeholder="e.g. INV-001"></div>
+        <div class="fl"><div class="form-lbl">Invoice Date</div><input class="fc" id="blinv-date" type="date"></div>
+      </div>
+      <div class="fl"><div class="form-lbl">Description *</div><input class="fc" id="blinv-desc" placeholder="What was billed"></div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Amount (₱)</div><input class="fc" id="blinv-amount" type="number" min="0" placeholder="0.00" oninput="blUpdateInvoicePreview()"></div>
+        <div class="fl"><div class="form-lbl">Due Date</div><input class="fc" id="blinv-due" type="date"></div>
+      </div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">EWT Rate (%)</div><input class="fc" id="blinv-ewt-rate" type="number" min="0" placeholder="2" oninput="blUpdateInvoicePreview()"></div>
+        <div class="fl"><div class="form-lbl">Other Deductions (₱)</div><input class="fc" id="blinv-ded-amt" type="number" min="0" placeholder="0" oninput="blUpdateInvoicePreview()"></div>
+      </div>
+      <div style="background:var(--paper);border:1px solid var(--bd);border-radius:var(--r);padding:12px 16px;font-size:12px;">
+        <div style="font-weight:700;margin-bottom:8px;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--soft);">Invoice Preview</div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>Gross Amount</span><strong id="blinv-gross-preview">₱0.00</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;color:var(--or);"><span>EWT Deduction</span><span id="blinv-ewt-amount-preview">₱0.00</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;color:var(--rd);"><span>Other Deductions</span><span id="blinv-ded-preview">₱0.00</span></div>
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-top:1px solid var(--bd);margin-top:4px;font-family:'Syne',sans-serif;font-size:13px;font-weight:800;color:var(--mg);"><span>Net Amount Due</span><span id="blinv-amount-due-preview">₱0.00</span></div>
+      </div>
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-ol" onclick="closeMo('mo-add-invoice')">Cancel</button>
+      <button class="btn btn-mg" onclick="blSaveInvoice()">Save Invoice</button>
+    </div>
+  </div>
+</div>
+
+<!-- Expense Modal -->
+<div class="mo" id="mo-add-expense">
+  <div class="mo-box mo-box-lg">
+    <div class="mo-head"><div class="mo-title" id="exp-mo-title">Add Expense</div><button class="mo-x" onclick="closeMo('mo-add-expense')">✕</button></div>
+    <div class="mo-body">
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Date</div><input class="fc" id="exp-f-date" type="date"></div>
+        <div class="fl"><div class="form-lbl">Category</div>
+          <select class="fc" id="exp-f-cat">
+            <option>Labor</option><option>Materials</option><option>Equipment</option>
+            <option>Professional Fees</option><option>Utilities</option><option>Transportation</option><option>Others</option>
+          </select>
+        </div>
+      </div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Payee *</div><input class="fc" id="exp-f-payee" placeholder="Supplier / vendor name"></div>
+        <div class="fl"><div class="form-lbl">SI/OR #</div><input class="fc" id="exp-f-sino" placeholder="Invoice number"></div>
+      </div>
+      <div class="fl"><div class="form-lbl">Project</div>
+        <input class="fc" id="exp-f-project" list="exp-project-datalist" placeholder="Project name">
+        <datalist id="exp-project-datalist"></datalist>
+      </div>
+      <div class="fl"><div class="form-lbl">Particulars *</div><input class="fc" id="exp-f-particulars" placeholder="Description of expense"></div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Amount (₱) *</div><input class="fc" id="exp-f-amount" type="number" min="0" placeholder="0.00"></div>
+        <div class="fl"><div class="form-lbl">Payment Type</div>
+          <select class="fc" id="exp-f-payment">
+            <option>Cash</option><option>Check</option><option>Bank Transfer</option>
+          </select>
+        </div>
+      </div>
+      <div class="fl"><div class="form-lbl">Remarks</div><input class="fc" id="exp-f-remarks" placeholder="Optional notes"></div>
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-rd btn-sm" id="exp-delete-btn" style="display:none;" onclick="deleteExpense()">Delete</button>
+      <button class="btn btn-ol" onclick="closeMo('mo-add-expense')">Cancel</button>
+      <button class="btn btn-mg" onclick="saveExpense()">Save Expense</button>
+    </div>
+  </div>
+</div>
+
+<!-- Override Rejection Modal -->
+<div class="mo" id="mo-override-reject">
+  <div class="mo-box">
+    <div class="mo-head"><div class="mo-title">Reject Override Request</div><button class="mo-x" onclick="closeMo('mo-override-reject')">✕</button></div>
+    <div class="mo-body">
+      <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:var(--r);padding:12px 14px;font-size:12.5px;color:#856404;margin-bottom:16px;">
+        You are rejecting this override. Both approval flags will be cleared and the ticket will return to <strong>Pending</strong> status.
+      </div>
+      <div class="fl">
+        <div class="form-lbl">Rejection Reason <span style="color:var(--rd);">*</span></div>
+        <textarea class="fc" id="override-reject-reason" rows="3" placeholder="Provide a reason for rejection..." style="resize:vertical;"></textarea>
+      </div>
+      <input type="hidden" id="override-reject-ticket-id">
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-ol" onclick="closeMo('mo-override-reject')">Cancel</button>
+      <button class="btn btn-rd" onclick="confirmOverrideReject()">Confirm Rejection</button>
+    </div>
+  </div>
+</div>
+
+<!-- Billing Gate Warning Modal -->
+<div class="mo" id="mo-billing-gate">
+  <div class="mo-box">
+    <div class="mo-head"><div class="mo-title" style="color:var(--rd);">⛔ Billing Gate — Payment Required</div><button class="mo-x" onclick="closeMo('mo-billing-gate')">✕</button></div>
+    <div class="mo-body">
+      <div style="background:#f8d7da;border:1px solid #f5c2c7;border-radius:var(--r);padding:14px 16px;font-size:13px;color:#721c24;margin-bottom:16px;line-height:1.6;" id="billing-gate-msg">
+        No received payment on record for this project.
+      </div>
+      <div style="font-size:12.5px;color:var(--soft);line-height:1.7;">
+        To proceed, either:<br>
+        <strong>A)</strong> Log a <em>Paid</em> invoice in Billing for this project's billing record.<br>
+        <strong>B)</strong> Have both the <strong>Boss</strong> and <strong>Finance</strong> approve an override.
+      </div>
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-ol" onclick="closeMo('mo-billing-gate')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"><span id="toast-text"></span></div>
+
+<script src="rsci.js"></script>
+</body>
+</html>
