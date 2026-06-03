@@ -57,8 +57,69 @@ function saveDB() { try { localStorage.setItem(DB_KEY, JSON.stringify(DB)); } ca
 function loadDB() {
   try {
     const raw = localStorage.getItem(DB_KEY);
-    if(raw) { const d = JSON.parse(raw); if(d && d.inventory) { Object.assign(DB, d); DB.po_release_queue = DB.po_release_queue || []; return; } }
+    if(raw) { const d = JSON.parse(raw); if(d && d.inventory) { Object.assign(DB, d); DB.po_release_queue = DB.po_release_queue || []; migrateDB(); return; } }
   } catch(e) {}
+  migrateDB();
+}
+
+function migrateDB() {
+  DB.user_assignments = DB.user_assignments || {};
+  Object.keys(DEMO_USERS).forEach(k=>{
+    const u=DEMO_USERS[k];
+    if(u.role==='engineer'&&u.assignedProjectIds&&!DB.user_assignments[k]) {
+      DB.user_assignments[k]={assignedProjectIds:[...u.assignedProjectIds]};
+    }
+  });
+  (DB.billing_records||[]).forEach(r=>{
+    if(r.projectId) return;
+    const p=DB.projects.find(x=>x.name===r.project||(r.company&&x.client===r.company));
+    if(p) { r.projectId=p.id; delete r.projectIdNote; }
+    else {
+      r.projectId=null;
+      if(!r.projectIdNote) r.projectIdNote='No matching project found in DB.projects.';
+    }
+  });
+  (DB.tickets||[]).forEach(t=>{
+    if(t.bossApproved===undefined) t.bossApproved=false;
+    if(t.financeApproved===undefined) t.financeApproved=false;
+    if(!t.auditTrail) t.auditTrail=[{action:'Created',by:t.submittedBy||'System',at:t.submittedAt||nowISO(),note:'Ticket created.'}];
+    if(!t.projectId&&t.project) {
+      const p=DB.projects.find(x=>x.name===t.project);
+      if(p) t.projectId=p.id;
+    }
+  });
+}
+
+function statusBadgeClass(status) {
+  return String(status||'').toLowerCase().replace(/\s+/g,'-');
+}
+
+function getAssignedProjectIds(userKey) {
+  return DB.user_assignments?.[userKey]?.assignedProjectIds
+    || DEMO_USERS[userKey]?.assignedProjectIds
+    || [];
+}
+
+function mergeUserAssignments(userKey, user) {
+  const ids=getAssignedProjectIds(userKey);
+  if(user.role==='engineer') return {...user,assignedProjectIds:ids.length?ids:(user.assignedProjectIds||[])};
+  return user;
+}
+
+function appendTicketAudit(ticket, action, note, by) {
+  if(!ticket.auditTrail) ticket.auditTrail=[];
+  ticket.auditTrail.push({action,by:by||_currentUser?.name||'System',at:nowISO(),note:note||''});
+}
+
+function ticketHasPaidBilling(projectId) {
+  if(!projectId) return false;
+  const record=DB.billing_records.find(r=>r.projectId===projectId);
+  if(!record) return false;
+  return DB.billing_invoices.some(inv=>inv.recordId===record.id&&inv.status==='Paid');
+}
+
+function getPendingOverrideTickets() {
+  return DB.tickets.filter(t=>t.status==='Pending Override');
 }
 
 // ── DEMO USERS ────────────────────────────────────────────────
@@ -168,6 +229,9 @@ let DB = {
       materials:[{name:'CIVIL:CEMENT TYPE I 40KG',requestedQty:20,unit:'BAGS',fulfilledQty:0,remainingQty:20,brand:'Holcim'},{name:'PLUMBING:PVC PIPE 2 INCH',requestedQty:5,unit:'LEN',fulfilledQty:0,remainingQty:5,brand:'Neltex'}]},
     {id:'TKT003',no:'TKT-2025-003',pm:'Jose Cruz',project:'GF Reception Area',projectId:'PROJ005',urgent:false,dateNeeded:'2025-05-25',submittedBy:'Carlos Reyes',submittedAt:'2025-05-08T14:00:00',status:'Completed',remarks:'',bossApproved:false,financeApproved:false,auditTrail:[{action:'Created',by:'Carlos Reyes',at:'2025-05-08T14:00:00',note:'Ticket created.'}],
       materials:[{name:'FINISHING:PAINT WHITE LATEX 4L',requestedQty:8,unit:'GAL',fulfilledQty:8,remainingQty:0,brand:'Davies'},{name:'CIVIL:PLYWOOD 3/4 MARINE',requestedQty:5,unit:'SHT',fulfilledQty:5,remainingQty:0,brand:'Generic'}]},
+    {id:'TKT004',no:'TKT-2025-004',pm:'Marco Rivera',project:'Maxicare Pulilan — 3F Renovation',projectId:'PROJ001',urgent:false,dateNeeded:'2025-06-01',submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:'2025-05-28T09:00:00',status:'Pending Override',remarks:'Awaiting billing override',bossApproved:false,financeApproved:false,
+      auditTrail:[{action:'Created',by:'Marco Rivera',at:'2025-05-28T09:00:00',note:'Ticket created.'},{action:'Entry gate blocked',by:'Liza Mercado',at:'2025-05-28T09:15:00',note:'Billing gate blocked — no paid invoice for Maxicare Pulilan — 3F Renovation'}],
+      materials:[{name:'ELECTRICAL:ROYAL CORD THHN 5.5mm2 - BLACK',requestedQty:10,unit:'PCS',fulfilledQty:0,remainingQty:10,brand:'Royal Cord'}]},
   ],
   purchase_orders: [
     {id:'PO001',no:'RS2025_0041',vendor:'Conduit Pro Supply Co.',supplierId:'SUP001',project:'Maxicare Pulilan — 3F Renovation',pm:'Jose Cruz',date:'2025-05-10',terms:30,dueDate:'2025-06-09',status:'Pending',remarks:'Rush order',
@@ -307,7 +371,7 @@ function doLogin() {
   const btn = document.getElementById('login-btn');
   btn.disabled = true; btn.textContent = 'Signing in…';
   setTimeout(()=>{
-    _currentUser = {...DEMO_USERS[_selectedRole]};
+    _currentUser = mergeUserAssignments(_selectedRole, {...DEMO_USERS[_selectedRole]});
     btn.disabled = false; btn.textContent = 'Sign In';
     setupApp();
   }, 600);
@@ -371,6 +435,15 @@ const NAV_DEFS = {
     {label:'Stock Out',      page:'inv-stock-out',    icon:'<path d="M19 13H5v-2h14v2z"/>'},
     {label:'Movement Log',   page:'inv-log',          icon:'<path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/>'},
   ],
+  boss: [
+    {section:'Overview'},
+    {label:'Dashboard',      page:'boss-dashboard',        icon:'<path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/>'},
+    {label:'Override Queue', page:'boss-override-queue',   icon:'<path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/>', badge:'override-pend'},
+    {section:'View Only'},
+    {label:'Projects',       page:'boss-projects',         icon:'<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/>'},
+    {label:'PO List',        page:'boss-po-list',          icon:'<path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6z"/>'},
+    {label:'Billing Summary',page:'boss-billing',          icon:'<path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/>'},
+  ],
 };
 
 // ── APP SETUP ─────────────────────────────────────────────────
@@ -395,6 +468,7 @@ function setupApp() {
     return `<button class="nb" data-page="${n.page}" onclick="navigate('${n.page}',this)">
       <svg viewBox="0 0 24 24">${n.icon}</svg>${n.label}
       ${n.badge==='po-pend'?`<span class="nb-badge" id="nb-po-pend">${DB.purchase_orders.filter(p=>p.status==='Pending').length||''}</span>`:''}
+      ${n.badge==='override-pend'?`<span class="nb-badge" id="nb-override-pend">${getPendingOverrideTickets().length||''}</span>`:''}
     </button>`;
   }).join('');
 
@@ -405,7 +479,7 @@ function setupApp() {
   // Navigate to default page
   const defaults = {
     admin:'acc-dashboard',accountant:'acc-dashboard',po_officer:'po-dashboard',
-    inventory_manager:'inv-dashboard', engineer:'emp-dashboard'
+    inventory_manager:'inv-dashboard', engineer:'emp-dashboard', boss:'boss-dashboard'
   };
   navigate(defaults[u.role] || 'po-dashboard', null);
 }
@@ -431,6 +505,8 @@ function navigate(page, btn) {
     'inv-dashboard':'Inventory Dashboard','inv-all':'All Inventory',
     'inv-stock-in':'Stock In','inv-stock-out':'Stock Out','inv-log':'Movement Log',
     'projects':'Awarded Projects','suppliers':'Suppliers / Vendors','expenses-report':'Expenses by Project',
+    'boss-dashboard':'Executive Dashboard','boss-override-queue':'Override Queue',
+    'boss-projects':'Awarded Projects','boss-po-list':'Purchase Orders','boss-billing':'Billing Summary',
   };
   if(_currentUser?.role==='engineer') {
     titles['emp-dashboard']='Engineer Requests';
@@ -459,9 +535,14 @@ function navigate(page, btn) {
   if(page==='inv-log')         renderLog();
   if(page==='inv-stock-in')    { document.getElementById('si-date').value=today(); }
   if(page==='inv-stock-out')   { document.getElementById('so-date').value=today(); }
-  if(page==='projects')        renderProjectsList();
+  if(page==='projects')        { projectsGoTab('list', document.querySelector('#projects-tab-nav .exp-sub-btn')); renderProjectsList(); }
   if(page==='suppliers')       renderSuppliersList();
   if(page==='expenses-report') initExpensesReport();
+  if(page==='boss-dashboard')       renderBossDashboard();
+  if(page==='boss-override-queue')  renderBossOverrideQueue();
+  if(page==='boss-projects')        renderBossProjectsList();
+  if(page==='boss-po-list')          renderBossPOList();
+  if(page==='boss-billing')         renderBossBillingSummary();
 }
 
 function toggleSidebar() {
@@ -596,7 +677,7 @@ function renderAccDashboard() {
           partTkts.map(t=>`<div class="alert-row" style="cursor:pointer;">
             <div style="flex:1;"><div style="font-weight:700;font-size:12px;">${t.no} ${t.urgent?'<span class="badge badge-urgent" style="font-size:9px;">URGENT</span>':''}</div>
             <div style="font-size:11px;color:var(--faint);">${t.project}</div></div>
-            <span class="badge badge-${t.status.toLowerCase()}">${t.status}</span></div>`).join('')}
+            <span class="badge badge-${statusBadgeClass(t.status)}">${t.status}</span></div>`).join('')}
       </div>
     </div>
     <div class="dash-widget">
@@ -607,6 +688,9 @@ function renderAccDashboard() {
         ${duePOs.length?`<div style="border-top:1px solid var(--bd);margin-top:4px;padding:10px 14px 4px;font-size:10px;font-weight:700;color:var(--or);text-transform:uppercase;letter-spacing:.5px;">💳 Payment Reminders</div>`+''+duePOs.map(p=>{const ds=dueDateStatus(p.dueDate);return `<div class="alert-row"><div style="flex:1;font-size:11.5px;font-weight:600;">${p.no} – ${p.vendor}</div><span class="due-tag ${ds}" style="font-size:9.5px;padding:2px 6px;">${ds==='overdue'?'OVERDUE':'Due '+fmtDate(p.dueDate)}</span></div>`}).join(''):''}
       </div>
     </div>`;
+
+  const overrideSec=document.getElementById('acc-dash-override-section');
+  if(overrideSec) overrideSec.innerHTML=buildOverrideQueueHTML('finance', {compact:false, showViewAll:true});
 }
 
 // ── MATERIAL TICKETS ──────────────────────────────────────────
@@ -621,7 +705,7 @@ function renderEmpDashboard() {
     <div class="ticket-row" onclick="viewTicketDetail('${t.id}')">
       <div><div class="ticket-no">${t.no} ${t.urgent?'<span class="badge badge-urgent" style="font-size:9px;">URGENT</span>':''}</div><div class="ticket-project">${t.project}</div></div>
       <div style="flex:1;"><div class="ticket-mats">${t.materials.map(m=>m.name.split(':').pop()).join(', ')}</div><div class="ticket-date">PM: ${t.pm} · ${fmtDate(t.submittedAt.split('T')[0])}</div></div>
-      <div><span class="badge badge-${t.status.toLowerCase()}">${t.status}</span></div>
+      <div><span class="badge badge-${statusBadgeClass(t.status)}">${t.status}</span></div>
       <div style="color:var(--mg);">→</div>
     </div>`).join('');
 }
@@ -639,9 +723,10 @@ function viewTicketDetail(id) {
   el.innerHTML=`<div style="padding:22px 28px;">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap;">
       <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:var(--mg);">${esc(t.no)}</div>
-      <span class="badge badge-${t.status.toLowerCase()}">${t.status}</span>
+      <span class="badge badge-${statusBadgeClass(t.status)}">${t.status}</span>
       ${t.urgent?'<span class="badge badge-urgent">⚡ URGENT</span>':''}
     </div>
+    ${t.status==='Pending Override'?`<div class="billing-gate-banner" style="margin-bottom:14px;">⛔ This ticket is blocked by the billing gate. Boss and Finance must approve an override, or a paid invoice must be logged in Billing.</div>`:''}
     <div class="fr2">
       <div><div class="form-lbl">PM</div><div style="font-weight:600;">${esc(t.pm)}</div></div>
       <div><div class="form-lbl">Project</div><div style="font-weight:600;">${esc(t.project)}</div></div>
@@ -662,6 +747,14 @@ function viewTicketDetail(id) {
       <td><span class="badge ${done?'badge-completed':'badge-pending'}">${done?'Done':'Pending'}</span></td>
     </tr>`}).join('')}</tbody></table></div>
     ${t.linkedPOId?`<div style="margin-top:16px;padding:12px 16px;background:var(--mg-lt);border:1.5px solid var(--mg);border-radius:var(--r);font-size:12.5px;">📋 Linked PO: <strong>${esc(t.linkedPONo||'–')}</strong></div>`:''}
+    ${(t.bossApproved||t.financeApproved)?`<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      <span class="approval-pill ${t.bossApproved?'yes':'no'}">Boss: ${t.bossApproved?'Approved':'Pending'}</span>
+      <span class="approval-pill ${t.financeApproved?'yes':'no'}">Finance: ${t.financeApproved?'Approved':'Pending'}</span>
+    </div>`:''}
+    ${(t.auditTrail&&t.auditTrail.length)?`<div style="border-top:1px solid var(--bd);margin:16px 0 10px;padding-top:12px;">
+      <div style="font-family:'Syne',sans-serif;font-size:11px;font-weight:700;color:var(--soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Audit Trail</div>
+      <div class="audit-trail-list">${t.auditTrail.slice().reverse().map(a=>`<div class="audit-trail-row"><div style="font-weight:600;font-size:12px;">${esc(a.action)}</div><div style="font-size:11px;color:var(--faint);">${esc(a.by)} · ${fmtDT(a.at)}</div>${a.note?`<div style="font-size:11.5px;color:var(--soft);margin-top:2px;">${esc(a.note)}</div>`:''}</div>`).join('')}</div>
+    </div>`:''}
     ${convertBtn}
     ${isDone&&t.status!=='Completed'?`<div style="margin-top:16px;"><button class="btn btn-gn" onclick="completeTicketAndDeductInventory('${id}')" style="width:100%;justify-content:center;">✓ Mark as Completed</button></div>`:''}
   </div>`;
@@ -686,12 +779,36 @@ function initNewTicket() {
   matRows=[];
   document.getElementById('mat-entries').innerHTML='';
   document.getElementById('nt-pm').value=_currentUser?.role==='engineer' ? (_currentUser?.name||'') : '';
-  document.getElementById('nt-pn').value='';
+  const sel=document.getElementById('nt-pn');
+  const assigned=_currentUser?.role==='engineer' ? (_currentUser?.assignedProjectIds||[]) : DB.projects.map(p=>p.id);
+  const activeProjects=DB.projects.filter(p=>p.status==='Active'&&assigned.includes(p.id));
+  if(sel) {
+    sel.innerHTML='<option value="">Select project...</option>'+activeProjects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+    sel.value='';
+  }
+  const clientRow=document.getElementById('nt-client-row');
+  const clientEl=document.getElementById('nt-client');
+  if(clientRow) clientRow.style.display='none';
+  if(clientEl) clientEl.value='';
   const siteEl=document.getElementById('nt-site'); if(siteEl) siteEl.value='';
   document.getElementById('nt-date-needed').value='';
   document.getElementById('nt-urg').checked=false;
   document.getElementById('nt-remarks').value='';
   addMatRow();
+}
+
+function onTicketProjectChange() {
+  const sel=document.getElementById('nt-pn');
+  const proj=DB.projects.find(p=>p.id===(sel?.value||''));
+  const clientRow=document.getElementById('nt-client-row');
+  const clientEl=document.getElementById('nt-client');
+  if(proj&&clientRow&&clientEl) {
+    clientRow.style.display='block';
+    clientEl.value=proj.client||'';
+  } else if(clientRow) {
+    clientRow.style.display='none';
+    if(clientEl) clientEl.value='';
+  }
 }
 
 function addMatRow() {
@@ -712,15 +829,15 @@ function removeMatRow(id) { matRows=matRows.filter(x=>x!==id); document.getEleme
 
 function submitTicket() {
   const pm=document.getElementById('nt-pm').value.trim();
-  const pn=document.getElementById('nt-pn').value.trim();
+  const projectId=document.getElementById('nt-pn').value.trim();
   const siteLocation=(document.getElementById('nt-site')?.value||'').trim();
   const dn=document.getElementById('nt-date-needed').value;
   const urg=document.getElementById('nt-urg').checked;
   const remarks=document.getElementById('nt-remarks').value.trim();
-  if(!pm||!pn) { toast('Error: PM and Project are required.'); return; }
-  // Feature 1: validate project exists
-  const projMatch = DB.projects.find(p=>p.name===pn);
-  if(!projMatch) { toast('Warning: Project not found in the project list. Please add the project first or select from the list.'); return; }
+  if(!pm||!projectId) { toast('Error: PM and Project are required.'); return; }
+  const projMatch=DB.projects.find(p=>p.id===projectId);
+  if(!projMatch) { toast('Warning: Project not found. Select a project from your assigned list.'); return; }
+  const pn=projMatch.name;
   const mats=[];
   for(const id of matRows) {
     const n=document.getElementById('matn-'+id)?.value.trim();
@@ -730,16 +847,82 @@ function submitTicket() {
   }
   if(!mats.length) { toast('Error: Add at least one material.'); return; }
   const no='TKT-'+new Date().getFullYear()+'-'+String(DB.tickets.length+1).padStart(3,'0');
-  DB.tickets.unshift({id:uid(),no,pm,project:pn,urgent:urg,dateNeeded:dn,submittedBy:_currentUser?.name||'–',submittedRole:_currentUser?.role||'',engineerName:_currentUser?.role==='engineer'?_currentUser?.name||'':'' ,siteLocation,submittedAt:nowISO(),status:'Pending',remarks,materials:mats});
+  const submittedAt=nowISO();
+  DB.tickets.unshift({
+    id:uid(),no,pm,project:pn,projectId,bossApproved:false,financeApproved:false,
+    urgent:urg,dateNeeded:dn,submittedBy:_currentUser?.name||'–',submittedRole:_currentUser?.role||'',
+    engineerName:_currentUser?.role==='engineer'?_currentUser?.name||'':'',siteLocation,submittedAt,
+    status:'Pending',remarks,materials:mats,
+    auditTrail:[{action:'Created',by:_currentUser?.name||'–',at:submittedAt,note:'Ticket created.'}],
+  });
   saveDB(); toast('Ticket submitted.','ok');
   navigate('emp-dashboard', document.querySelector('[data-page="emp-dashboard"]'));
 }
 
 // ── PROJECTS (Feature 1) ───────────────────────────────────────
 let projEditId = null;
+function projectsGoTab(tab, btn) {
+  document.querySelectorAll('#projects-tab-nav .exp-sub-btn').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  const engTabBtn=document.getElementById('projects-eng-tab-btn');
+  if(engTabBtn) engTabBtn.style.display=_currentUser?.role==='admin'?'':'none';
+  const listWrap=document.getElementById('projects-list-wrap');
+  const assignWrap=document.getElementById('projects-assignments-wrap');
+  if(tab==='assignments'&&_currentUser?.role==='admin') {
+    if(listWrap) listWrap.style.display='none';
+    if(assignWrap) { assignWrap.style.display='block'; renderEngineerAssignments(); }
+  } else {
+    if(listWrap) listWrap.style.display='block';
+    if(assignWrap) assignWrap.style.display='none';
+    if(tab==='list') renderProjectsList();
+  }
+}
+
+function renderEngineerAssignments() {
+  const el=document.getElementById('projects-assignments-wrap');
+  if(!el) return;
+  const activeProjects=DB.projects.filter(p=>p.status==='Active');
+  const engineers=Object.entries(DEMO_USERS).filter(([,u])=>u.role==='engineer');
+  if(!engineers.length) { el.innerHTML='<div class="empty-state">No engineer users configured.</div>'; return; }
+  el.innerHTML=`
+    <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+      <button class="btn btn-mg btn-sm" onclick="saveAllEngineerAssignments()">Save All</button>
+    </div>
+    <div class="tbl-wrap"><table class="eng-assign-table">
+      <thead><tr><th>Engineer</th><th>Assigned Projects</th><th style="width:100px;"></th></tr></thead>
+      <tbody>${engineers.map(([key,u])=>{
+        const assigned=getAssignedProjectIds(key);
+        return `<tr>
+          <td style="vertical-align:top;padding-top:14px;">
+            <div style="font-weight:700;">${esc(u.name)}</div>
+            <span class="badge badge-bl" style="font-size:9px;margin-top:4px;display:inline-block;">Engineer</span>
+          </td>
+          <td><div class="eng-proj-checks">${activeProjects.map(p=>`
+            <label class="eng-proj-check"><input type="checkbox" data-eng-key="${esc(key)}" data-proj-id="${esc(p.id)}" ${assigned.includes(p.id)?'checked':''}>
+            <span>${esc(p.name)}</span></label>`).join('')}</div></td>
+          <td style="vertical-align:top;padding-top:14px;"><button class="btn btn-ol btn-sm" onclick="saveEngineerAssignment('${key}')">Save</button></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>`;
+}
+
+function saveEngineerAssignment(userKey) {
+  const ids=[...document.querySelectorAll(`input[data-eng-key="${userKey}"]:checked`)].map(c=>c.dataset.projId);
+  DB.user_assignments[userKey]={assignedProjectIds:ids};
+  if(DEMO_USERS[userKey]) DEMO_USERS[userKey].assignedProjectIds=ids;
+  saveDB();
+  toast('Engineer assignments saved.','ok');
+}
+
+function saveAllEngineerAssignments() {
+  Object.keys(DEMO_USERS).filter(k=>DEMO_USERS[k].role==='engineer').forEach(saveEngineerAssignment);
+}
+
 function renderProjectsList() {
   const el=document.getElementById('projects-list-wrap');
   if(!el) return;
+  const engTabBtn=document.getElementById('projects-eng-tab-btn');
+  if(engTabBtn) engTabBtn.style.display=_currentUser?.role==='admin'?'':'none';
   if(!DB.projects.length) { el.innerHTML='<div class="empty-state"><div class="empty-icon">🏗</div>No projects yet. Add an awarded project first.</div>'; return; }
   el.innerHTML=`<div class="tbl-wrap"><table>
     <thead><tr><th>Project Name</th><th>Client</th><th>Code</th><th style="text-align:right;">Contract</th><th>Status</th><th>Location</th><th></th></tr></thead>
@@ -1212,13 +1395,48 @@ function prefillPOFromTicket(ticket) {
   calcPOTotal();
 }
 
+function proceedConvertTicketToPO(ticket) {
+  _pendingTicketConversion=ticket;
+  const targetPage=_currentUser?.role==='po_officer' ? 'po-new-po' : 'req-new-po';
+  navigate(targetPage, document.querySelector(`[data-page="${targetPage}"]`));
+}
+
 function convertTicketToPO(ticketId) {
   const ticket=DB.tickets.find(x=>x.id===ticketId);
   if(!ticket) { toast('Error: Ticket not found.'); return; }
   if(ticket.linkedPOId) { toast('Warning: This ticket is already linked to a PO.'); return; }
-  _pendingTicketConversion=ticket;
-  const targetPage=_currentUser?.role==='po_officer' ? 'po-new-po' : 'req-new-po';
-  navigate(targetPage, document.querySelector(`[data-page="${targetPage}"]`));
+
+  if(ticket.bossApproved&&ticket.financeApproved) {
+    appendTicketAudit(ticket,'PO bypassed gate','Billing gate bypassed — Boss & Finance approved');
+    saveDB();
+    proceedConvertTicketToPO(ticket);
+    return;
+  }
+
+  if(ticketHasPaidBilling(ticket.projectId)) {
+    proceedConvertTicketToPO(ticket);
+    return;
+  }
+
+  const proj=DB.projects.find(p=>p.id===ticket.projectId);
+  const client=proj?.client||ticket.client||'Unknown Client';
+  const projectName=ticket.project||proj?.name||'Unknown Project';
+  appendTicketAudit(ticket,'Entry gate blocked',`Billing gate blocked — no paid invoice for ${projectName}`);
+  ticket.status='Pending Override';
+  ticket.bossApproved=false;
+  ticket.financeApproved=false;
+  saveDB();
+
+  const msgEl=document.getElementById('billing-gate-msg');
+  if(msgEl) msgEl.textContent=`No received payment on record for ${client} — ${projectName}. A downpayment must be logged in Billing, or Boss & Finance must approve an override.`;
+  openMo('mo-billing-gate');
+  toast('Warning: Billing gate blocked. Ticket moved to Pending Override.','warn');
+
+  if(currentPage==='po-dashboard') renderPODashboard();
+  if(currentPage==='acc-dashboard') renderAccDashboard();
+  if(currentPage==='boss-dashboard') renderBossDashboard();
+  if(currentPage==='boss-override-queue') renderBossOverrideQueue();
+  updateOverrideNavBadge();
 }
 
 // ── PO FORM (Features 2,3,4,5) ────────────────────────────────
@@ -2593,6 +2811,204 @@ function deleteExpense() {
   saveDB(); expRenderList(); closeMo('mo-add-expense'); toast('Expense deleted.','ok');
 }
 
+// ── OVERRIDE QUEUE (Boss / Finance) ───────────────────────────
+let _overrideRejectRole = 'boss';
+
+function updateOverrideNavBadge() {
+  const nb=document.getElementById('nb-override-pend');
+  const cnt=getPendingOverrideTickets().length;
+  if(nb) nb.textContent=cnt||'';
+  const oq=document.getElementById('boss-oq-cnt');
+  if(oq) oq.textContent=cnt;
+}
+
+function approvalBadgeHtml(approved, label) {
+  return `<span class="approval-pill ${approved?'yes':'no'}">${label}: ${approved?'✓ Approved':'Pending'}</span>`;
+}
+
+function buildOverrideQueueHTML(approverRole, opts={}) {
+  const {compact=false, showViewAll=false} = opts;
+  const tickets=getPendingOverrideTickets();
+  if(!tickets.length) {
+    return `<div class="dash-widget" style="margin-top:${compact?0:18}px;">
+      <div class="dash-widget-head"><div class="dash-widget-title">🛡 Pending Override Requests</div><span class="badge badge-completed">0</span></div>
+      <div class="dash-widget-body"><div class="empty-state"><div class="empty-icon">✓</div>No override requests pending</div></div>
+    </div>`;
+  }
+  const roleLabel=approverRole==='boss'?'Boss':'Finance';
+  const rows=tickets.map(t=>{
+    const proj=DB.projects.find(p=>p.id===t.projectId);
+    const client=proj?.client||'–';
+    const engineer=t.engineerName||t.submittedBy||'–';
+    const canAct=approverRole==='boss' ? !t.bossApproved : !t.financeApproved;
+    return `<tr>
+      <td style="font-family:'Syne',sans-serif;font-weight:800;color:var(--mg);">${esc(t.no)}</td>
+      <td>${esc(t.project)}</td>
+      <td style="font-size:12px;color:var(--soft);">${esc(client)}</td>
+      <td>${esc(engineer)}</td>
+      <td style="font-size:11.5px;color:var(--faint);">${fmtDate((t.submittedAt||'').split('T')[0])}</td>
+      <td><div style="display:flex;flex-direction:column;gap:4px;">${approvalBadgeHtml(!!t.bossApproved,'Boss')}${approvalBadgeHtml(!!t.financeApproved,'Finance')}</div></td>
+      <td style="white-space:nowrap;">
+        ${canAct?`<button class="btn btn-gn btn-sm" onclick="approveOverride('${t.id}','${approverRole}')">Approve Override</button>`:''}
+        <button class="btn btn-rd btn-sm" style="margin-left:4px;" onclick="openOverrideReject('${t.id}','${approverRole}')">Reject</button>
+      </td>
+    </tr>`;
+  }).join('');
+  return `<div class="dash-widget" style="margin-top:${compact?0:18}px;">
+    <div class="dash-widget-head">
+      <div class="dash-widget-title" style="color:var(--or);">🛡 Pending Override Requests</div>
+      <span class="badge badge-pending-override">${tickets.length}</span>
+      ${showViewAll&&_currentUser?.role==='boss'?`<button class="btn btn-ol btn-sm" style="margin-left:auto;" onclick="navigate('boss-override-queue',document.querySelector('[data-page=boss-override-queue]'))">View All</button>`:''}
+    </div>
+    <div class="dash-widget-body ${compact?'no-pad':''}">
+      <div class="tbl-wrap" style="border:none;box-shadow:none;">
+        <table><thead><tr>
+          <th>Ticket #</th><th>Project</th><th>Client</th><th>Engineer</th><th>Submitted</th><th>Approvals</th><th>${roleLabel} Action</th>
+        </tr></thead><tbody>${rows}</tbody></table>
+      </div>
+    </div>
+  </div>`;
+}
+
+function approveOverride(ticketId, approverRole) {
+  const t=DB.tickets.find(x=>x.id===ticketId);
+  if(!t) return;
+  const name=_currentUser?.name||'–';
+  if(approverRole==='boss') {
+    t.bossApproved=true;
+    appendTicketAudit(t,'Boss approved',`Override approved by ${name}`);
+  } else {
+    t.financeApproved=true;
+    appendTicketAudit(t,'Finance approved',`Override approved by ${name}`);
+  }
+  saveDB();
+  toast('Override approved.','ok');
+  refreshOverrideViews();
+}
+
+function openOverrideReject(ticketId, approverRole) {
+  _overrideRejectRole=approverRole;
+  const hid=document.getElementById('override-reject-ticket-id');
+  const reason=document.getElementById('override-reject-reason');
+  if(hid) hid.value=ticketId;
+  if(reason) reason.value='';
+  openMo('mo-override-reject');
+}
+
+function confirmOverrideReject() {
+  const ticketId=document.getElementById('override-reject-ticket-id')?.value;
+  const reason=(document.getElementById('override-reject-reason')?.value||'').trim();
+  if(!reason) { toast('Error: Rejection reason is required.'); return; }
+  const t=DB.tickets.find(x=>x.id===ticketId);
+  if(!t) return;
+  const name=_currentUser?.name||'–';
+  t.bossApproved=false;
+  t.financeApproved=false;
+  t.status='Pending';
+  t.rejectionReason=reason;
+  if(_overrideRejectRole==='boss') {
+    appendTicketAudit(t,'Boss rejected',`Override rejected by ${name} — ${reason}`);
+  } else {
+    appendTicketAudit(t,'Finance rejected',`Override rejected by ${name} — ${reason}`);
+  }
+  saveDB();
+  closeMo('mo-override-reject');
+  toast('Override rejected. Ticket returned to Pending.','ok');
+  refreshOverrideViews();
+}
+
+function refreshOverrideViews() {
+  updateOverrideNavBadge();
+  if(currentPage==='boss-dashboard') renderBossDashboard();
+  if(currentPage==='boss-override-queue') renderBossOverrideQueue();
+  if(currentPage==='acc-dashboard') renderAccDashboard();
+}
+
+// ── BOSS DASHBOARD & READ-ONLY VIEWS ──────────────────────────
+function renderBossDashboard() {
+  const elDt=document.getElementById('boss-datetime');
+  if(elDt) elDt.textContent=new Date().toLocaleDateString('en-PH',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
+  const activeProj=DB.projects.filter(p=>p.status==='Active').length;
+  const pendOv=getPendingOverrideTickets().length;
+  const billed=DB.billing_invoices.reduce((s,i)=>s+(parseFloat(i.baseAmount)||0),0);
+  const activePOs=DB.purchase_orders.filter(p=>p.status==='Pending'||p.status==='Approved').length;
+  const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
+  set('boss-proj-cnt',activeProj);
+  set('boss-override-cnt',pendOv);
+  set('boss-billed-val',billed>=1000000?`₱${(billed/1000000).toFixed(1)}M`:`₱${(billed/1000).toFixed(0)}K`);
+  set('boss-po-cnt',activePOs);
+  const sec=document.getElementById('boss-dash-override-section');
+  if(sec) sec.innerHTML=buildOverrideQueueHTML('boss',{compact:false, showViewAll:true});
+  updateOverrideNavBadge();
+}
+
+function renderBossOverrideQueue() {
+  const el=document.getElementById('boss-override-list');
+  if(el) el.innerHTML=buildOverrideQueueHTML('boss',{compact:true});
+  updateOverrideNavBadge();
+}
+
+function renderBossProjectsList() {
+  const el=document.getElementById('boss-projects-list-wrap');
+  if(!el) return;
+  el.innerHTML=`<div class="tbl-wrap"><table>
+    <thead><tr><th>Project Name</th><th>Client</th><th>Code</th><th style="text-align:right;">Contract</th><th>Status</th><th>Location</th></tr></thead>
+    <tbody>${DB.projects.map(p=>`<tr>
+      <td style="font-family:'Syne',sans-serif;font-weight:700;color:var(--mg);">${esc(p.name)}</td>
+      <td style="font-size:12px;color:var(--soft);">${esc(p.client||'–')}</td>
+      <td><span class="project-code">${esc(p.code||'–')}</span></td>
+      <td style="text-align:right;font-weight:700;">${p.contractAmount>0?peso(p.contractAmount):'–'}</td>
+      <td><span class="${p.status==='Active'?'badge-active':p.status==='Completed'?'badge-completed-proj':'badge-on-hold'}" style="padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;">${esc(p.status)}</span></td>
+      <td style="font-size:12px;color:var(--faint);">${esc(p.location||'–')}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+function renderBossPOList() {
+  const q=(document.getElementById('boss-po-search')?.value||'').toLowerCase();
+  const f=document.getElementById('boss-po-filter')?.value||'all';
+  const filtered=DB.purchase_orders.filter(p=>{
+    const mq=!q||p.no.toLowerCase().includes(q)||(p.vendor||'').toLowerCase().includes(q);
+    return mq&&(f==='all'||p.status===f);
+  });
+  const el=document.getElementById('boss-po-list-body');
+  if(!el) return;
+  const badgeMap={'Pending':'pending','Approved':'ok','Received':'completed','Cancelled':'overdue'};
+  el.innerHTML=!filtered.length?'<div class="empty-state">No POs found.</div>':
+    `<table><thead><tr><th>PO #</th><th>Vendor</th><th>Project</th><th>Date</th><th style="text-align:right;">Total</th><th>Status</th></tr></thead>
+    <tbody>${filtered.map(p=>{
+      const total=p.items.reduce((s,i)=>s+(i.qty||0)*(i.unitPrice||0),0);
+      return `<tr>
+        <td style="font-family:'Syne',sans-serif;font-weight:800;color:var(--mg);">${esc(p.no)}</td>
+        <td>${esc(p.vendor)}</td>
+        <td>${esc(p.project||'–')}</td>
+        <td style="font-size:11.5px;color:var(--faint);">${fmtDate(p.date)}</td>
+        <td style="text-align:right;font-weight:700;">${peso(total)}</td>
+        <td><span class="badge badge-${badgeMap[p.status]||'pending'}">${p.status}</span></td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+}
+
+function renderBossBillingSummary() {
+  const el=document.getElementById('boss-billing-summary');
+  if(!el) return;
+  const rows=DB.billing_records.map(r=>{
+    const invs=DB.billing_invoices.filter(i=>i.recordId===r.id);
+    const paid=invs.filter(i=>i.status==='Paid').reduce((s,i)=>s+(parseFloat(i.baseAmount)||0),0);
+    const unpaid=invs.filter(i=>i.status!=='Paid').reduce((s,i)=>s+(parseFloat(i.baseAmount)||0),0);
+    return `<tr>
+      <td style="font-weight:600;">${esc(r.company)}</td>
+      <td>${esc(r.project)}</td>
+      <td style="text-align:right;">${peso(r.contractAmount)}</td>
+      <td style="text-align:right;color:var(--gn);font-weight:700;">${peso(paid)}</td>
+      <td style="text-align:right;color:var(--or);font-weight:700;">${peso(unpaid)}</td>
+      <td><span class="badge badge-${r.status==='active'?'ok':'pending'}">${esc(r.status)}</span></td>
+    </tr>`;
+  }).join('');
+  el.innerHTML=`<div class="tbl-wrap"><table>
+    <thead><tr><th>Company</th><th>Project</th><th style="text-align:right;">Contract</th><th style="text-align:right;">Paid</th><th style="text-align:right;">Unpaid</th><th>Status</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
 // ── TICKET HISTORY ────────────────────────────────────────────
 function initHistory() {
   document.getElementById('h-from').value='2025-01-01';
@@ -2612,7 +3028,7 @@ function showHistList() {
       <td>${esc(t.pm)}</td>
       <td style="font-weight:500;">${esc(t.project)}</td>
       <td style="font-size:11.5px;color:var(--faint);">${fmtDate(t.submittedAt.split('T')[0])}</td>
-      <td><span class="badge badge-${t.status.toLowerCase()}">${t.status}</span></td>
+      <td><span class="badge badge-${statusBadgeClass(t.status)}">${t.status}</span></td>
       <td style="font-size:11.5px;color:var(--soft);">${t.materials.map(m=>m.name.split(':').pop()).join(', ')}</td>
     </tr>`).join('')}</tbody></table></div>`;
 }

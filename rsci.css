@@ -305,7 +305,28 @@ a{color:inherit;text-decoration:none;}
 .badge-urgent{background:#f8d7da;color:#721c24;animation:urgentPulse 1.5s infinite;}
 .badge-bl{background:#cce5ff;color:#004085;}
 .badge-cancelled{background:#f8d7da;color:#721c24;}
+.badge-pending-override{background:#e8d4f8;color:#5a2d82;}
 @keyframes urgentPulse{0%,100%{opacity:1}50%{opacity:.6}}
+
+.approval-pill{display:inline-flex;font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;}
+.approval-pill.yes{background:#d4edda;color:#155724;}
+.approval-pill.no{background:#f8d7da;color:#721c24;}
+
+.billing-gate-banner{
+  background:#f8d7da;border:1px solid #f5c2c7;border-radius:var(--r);
+  padding:12px 14px;font-size:12.5px;color:#721c24;line-height:1.5;
+}
+
+.audit-trail-list{display:flex;flex-direction:column;gap:8px;}
+.audit-trail-row{
+  padding:10px 12px;background:var(--paper);border-radius:var(--r);
+  border-left:3px solid var(--mg);
+}
+
+.eng-proj-checks{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;padding:4px 0;}
+.eng-proj-check{display:flex;align-items:flex-start;gap:8px;font-size:12px;cursor:pointer;padding:4px 0;}
+.eng-proj-check input{margin-top:2px;accent-color:var(--mg);}
+.eng-assign-table td{padding:12px 14px;}
 
 /* Search / filter row */
 .search-row{
