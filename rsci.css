@@ -316,6 +316,19 @@ a{color:inherit;text-decoration:none;}
   background:#f8d7da;border:1px solid #f5c2c7;border-radius:var(--r);
   padding:12px 14px;font-size:12.5px;color:#721c24;line-height:1.5;
 }
+.billing-gate-ok{
+  background:#d4edda;border:1px solid #c3e6cb;color:#155724;
+}
+.billing-gate-blocked{
+  background:#f8d7da;border:1px solid #f5c2c7;color:#721c24;
+}
+.bl-prog-bar{height:6px;background:var(--paper);border-radius:3px;margin-top:8px;overflow:hidden;}
+.bl-prog-fill{height:6px;border-radius:3px;}
+.bl-prog-fill.gn{background:var(--gn);}
+.bl-inv-paid,.bl-inv-unpaid,.bl-inv-overdue{display:inline-block;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;}
+.bl-inv-paid{background:#d4edda;color:#155724;}
+.bl-inv-unpaid{background:#fff3cd;color:#856404;}
+.bl-inv-overdue{background:#f8d7da;color:#721c24;}
 
 .audit-trail-list{display:flex;flex-direction:column;gap:8px;}
 .audit-trail-row{

@@ -60,8 +60,8 @@
         <summary>Suggested presentation flow</summary>
         <ol>
           <li><strong>Boss</strong> — Override Queue → approve TKT-2026-004</li>
-          <li><strong>Accountant</strong> — Dashboard → approve TKT-2026-006 (boss already approved)</li>
-          <li><strong>PO Officer</strong> — Create PO from TKT-2026-005 (billing paid) or retry TKT-2026-004 after overrides</li>
+          <li><strong>Accountant</strong> — Billing → mark Maxicare mobilization Paid, or approve TKT-2026-006 override</li>
+          <li><strong>PO Officer</strong> — Create PO from TKT-2026-005 (Smilee has paid invoice) or TKT-2026-004 after overrides</li>
           <li><strong>Engineer</strong> — New Request → sample pre-filled → Submit</li>
           <li><strong>Admin</strong> — Projects → Engineer Assignments</li>
         </ol>
@@ -174,9 +174,10 @@
             <div class="fr2">
               <div><div class="form-lbl">Project Manager</div><input class="fc" type="text" id="nt-pm" placeholder="Enter name"></div>
               <div><div class="form-lbl">Project Name</div>
-                <select class="fc" id="nt-pn" onchange="onTicketProjectChange()">
-                  <option value="">Select project...</option>
-                </select>
+                <input class="fc" id="nt-pn" list="nt-pn-datalist" placeholder="Type or select project…" autocomplete="off" oninput="onTicketProjectInput()">
+                <datalist id="nt-pn-datalist"></datalist>
+                <input type="hidden" id="nt-project-id">
+                <div style="font-size:10.5px;color:var(--faint);margin-top:4px;">Includes awarded projects and jobs from Customer Billing.</div>
               </div>
             </div>
             <div id="nt-client-row" style="display:none;margin-bottom:14px;">
@@ -256,6 +257,7 @@
           <div class="stat-icon"><svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg></div>
         </div>
       </div>
+      <div id="acc-dash-billing-gate"></div>
       <div id="acc-dash-override-section"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;" id="acc-dash-cols"></div>
     </div>
@@ -958,8 +960,18 @@
   <div class="mo-box">
     <div class="mo-head"><div class="mo-title">New Billing Record</div><button class="mo-x" onclick="closeMo('mo-add-billing')">✕</button></div>
     <div class="mo-body">
-      <div class="fl"><div class="form-lbl">Company Name *</div><input class="fc" id="bl-add-company" placeholder="Client company name"></div>
-      <div class="fl"><div class="form-lbl">Project *</div><input class="fc" id="bl-add-project" list="bl-project-datalist" placeholder="Project description"><datalist id="bl-project-datalist"></datalist></div>
+      <div class="fl"><div class="form-lbl">Awarded Project Name *</div>
+        <input class="fc" id="bl-add-project" list="bl-project-datalist" placeholder="Type project name (billing-only or pick from list)" oninput="blOnBillingProjectNameInput()">
+        <datalist id="bl-project-datalist"></datalist>
+        <div style="font-size:10.5px;color:var(--faint);margin-top:4px;">Enter any project here — you do not need to add it under Awarded Projects first.</div>
+      </div>
+      <div class="fl"><div class="form-lbl">Link to existing awarded project <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">(optional)</span></div>
+        <select class="fc" id="bl-add-project-id" onchange="blOnBillingProjectPick()">
+          <option value="">None — billing only (manual entry)</option>
+        </select>
+        <div style="font-size:10.5px;color:var(--faint);margin-top:4px;">Choose a registered project to link PO gate and tickets by project ID.</div>
+      </div>
+      <div class="fl"><div class="form-lbl">Company Name *</div><input class="fc" id="bl-add-company" placeholder="Client / company name"></div>
       <div class="fr2">
         <div class="fl"><div class="form-lbl">Contract Amount (₱) *</div><input class="fc" id="bl-add-contract" type="number" min="0" placeholder="0.00"></div>
         <div class="fl"><div class="form-lbl">Tax Type</div>
@@ -998,6 +1010,15 @@
       <div class="fr2">
         <div class="fl"><div class="form-lbl">EWT Rate (%)</div><input class="fc" id="blinv-ewt-rate" type="number" min="0" placeholder="2" oninput="blUpdateInvoicePreview()"></div>
         <div class="fl"><div class="form-lbl">Other Deductions (₱)</div><input class="fc" id="blinv-ded-amt" type="number" min="0" placeholder="0" oninput="blUpdateInvoicePreview()"></div>
+      </div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Status</div>
+          <select class="fc" id="blinv-status" onchange="blToggleInvoicePaidFields()">
+            <option value="Unpaid">Unpaid</option>
+            <option value="Paid">Paid — unlocks PO gate</option>
+          </select>
+        </div>
+        <div class="fl" id="blinv-paid-date-row" style="display:none;"><div class="form-lbl">Paid Date</div><input class="fc" id="blinv-paid-date" type="date"></div>
       </div>
       <div style="background:var(--paper);border:1px solid var(--bd);border-radius:var(--r);padding:12px 16px;font-size:12px;">
         <div style="font-weight:700;margin-bottom:8px;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--soft);">Invoice Preview</div>
@@ -1076,22 +1097,23 @@
   </div>
 </div>
 
-<!-- Billing Gate Warning Modal -->
+<!-- Billing Gate Warning Modal (PO) -->
 <div class="mo" id="mo-billing-gate">
   <div class="mo-box">
-    <div class="mo-head"><div class="mo-title" style="color:var(--rd);">⛔ Billing Gate — Payment Required</div><button class="mo-x" onclick="closeMo('mo-billing-gate')">✕</button></div>
+    <div class="mo-head"><div class="mo-title" style="color:var(--rd);">⛔ Billing Gate — PO Blocked</div><button class="mo-x" onclick="closeMo('mo-billing-gate')">✕</button></div>
     <div class="mo-body">
       <div style="background:#f8d7da;border:1px solid #f5c2c7;border-radius:var(--r);padding:14px 16px;font-size:13px;color:#721c24;margin-bottom:16px;line-height:1.6;" id="billing-gate-msg">
         No received payment on record for this project.
       </div>
       <div style="font-size:12.5px;color:var(--soft);line-height:1.7;">
-        To proceed, either:<br>
-        <strong>A)</strong> Log a <em>Paid</em> invoice in Billing for this project's billing record.<br>
-        <strong>B)</strong> Have both the <strong>Boss</strong> and <strong>Finance</strong> approve an override.
+        This ticket cannot become a PO until there is a <strong>paid customer invoice</strong> on file, or until <strong>Boss</strong> and <strong>Finance</strong> both approve an exception.<br><br>
+        Use <strong>Notify for Override</strong> to send a request to Boss and Finance asking whether they can override the billing gate for this job.
       </div>
+      <input type="hidden" id="billing-gate-project-id">
     </div>
     <div class="mo-foot">
       <button class="btn btn-ol" onclick="closeMo('mo-billing-gate')">Close</button>
+      <button class="btn btn-or" onclick="billingGateNotifyOverride()">Notify for Override</button>
     </div>
   </div>
 </div>

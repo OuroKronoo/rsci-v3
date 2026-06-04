@@ -53,7 +53,7 @@ function dueDateStatus(dueDateStr) {
 
 // ── LOCAL STORAGE & DEMO SEED ─────────────────────────────────
 const DB_KEY = 'rsci_db_v3';
-const SEED_VERSION = 3;
+const SEED_VERSION = 4;
 const SEED_VERSION_KEY = 'rsci_seed_version';
 const DEMO_PASSWORD = 'demo2025';
 
@@ -131,15 +131,7 @@ function migrateDB() {
       DB.user_assignments[k]={assignedProjectIds:[...u.assignedProjectIds]};
     }
   });
-  (DB.billing_records||[]).forEach(r=>{
-    if(r.projectId) return;
-    const p=DB.projects.find(x=>x.name===r.project||(r.company&&x.client===r.company));
-    if(p) { r.projectId=p.id; delete r.projectIdNote; }
-    else {
-      r.projectId=null;
-      if(!r.projectIdNote) r.projectIdNote='No matching project found in DB.projects.';
-    }
-  });
+  (DB.billing_records||[]).forEach(r=>ensureProjectForBillingRecord(r));
   (DB.tickets||[]).forEach(t=>{
     if(t.bossApproved===undefined) t.bossApproved=false;
     if(t.financeApproved===undefined) t.financeApproved=false;
@@ -172,11 +164,231 @@ function appendTicketAudit(ticket, action, note, by) {
   ticket.auditTrail.push({action,by:by||_currentUser?.name||'System',at:nowISO(),note:note||''});
 }
 
+function reconcileBillingRecordProject(record) {
+  if(!record) return record;
+  const p=DB.projects.find(x=>x.id===record.projectId)
+    ||DB.projects.find(x=>x.name===record.project)
+    ||(record.company&&DB.projects.find(x=>x.client===record.company));
+  if(p) {
+    record.projectId=p.id;
+    if(!record.project) record.project=p.name;
+    if(!record.company) record.company=p.client||record.company;
+    delete record.projectIdNote;
+  } else if(!record.projectId) {
+    record.projectId=null;
+    if(!record.projectIdNote) record.projectIdNote='No matching project found in DB.projects.';
+  }
+  return record;
+}
+
+/** Ensures every billing record has a matching Active project for tickets / PO gate. */
+function ensureProjectForBillingRecord(record) {
+  if(!record||!(record.project||'').trim()) return record;
+  reconcileBillingRecordProject(record);
+  if(record.projectId&&DB.projects.some(p=>p.id===record.projectId)) {
+    const p=DB.projects.find(x=>x.id===record.projectId);
+    if(record.company) p.client=record.company;
+    if(record.contractAmount&&!p.contractAmount) p.contractAmount=parseFloat(record.contractAmount)||0;
+    if(p.status!=='Active') p.status='Active';
+    delete record.projectIdNote;
+    return record;
+  }
+  const name=record.project.trim();
+  let p=DB.projects.find(x=>x.name.toLowerCase()===name.toLowerCase());
+  if(!p) {
+    p={
+      id:uid(), name,
+      client:record.company||'',
+      contractAmount:parseFloat(record.contractAmount)||0,
+      status:'Active', code:'', location:'',
+      remarks:'Synced from Customer Billing',
+      createdAt:today(),
+    };
+    DB.projects.unshift(p);
+  } else {
+    if(record.company) p.client=record.company;
+    if(record.contractAmount&&!p.contractAmount) p.contractAmount=parseFloat(record.contractAmount)||0;
+    if(p.status!=='Active') p.status='Active';
+  }
+  record.projectId=p.id;
+  delete record.projectIdNote;
+  return record;
+}
+
+function getTicketProjectOptions() {
+  const isEng=_currentUser?.role==='engineer';
+  const allowed=new Set(isEng?(_currentUser?.assignedProjectIds||[]):DB.projects.map(p=>p.id));
+  if(isEng) {
+    (DB.billing_records||[]).forEach(r=>{
+      if(r.projectId) allowed.add(r.projectId);
+      else if(r.project) {
+        ensureProjectForBillingRecord(r);
+        if(r.projectId) allowed.add(r.projectId);
+      }
+    });
+  }
+  return DB.projects
+    .filter(p=>p.status==='Active'&&(!isEng||allowed.has(p.id)))
+    .map(p=>({id:p.id,name:p.name,client:p.client||''}))
+    .sort((a,b)=>a.name.localeCompare(b.name));
+}
+
+function resolveTicketProjectByName(name) {
+  const n=(name||'').trim();
+  if(!n) return null;
+  let p=DB.projects.find(x=>x.name.toLowerCase()===n.toLowerCase());
+  if(p) return {id:p.id,name:p.name,client:p.client||''};
+  const br=(DB.billing_records||[]).find(r=>(r.project||'').toLowerCase()===n.toLowerCase());
+  if(br) {
+    ensureProjectForBillingRecord(br);
+    p=DB.projects.find(x=>x.id===br.projectId);
+    if(p) return {id:p.id,name:p.name,client:br.company||p.client||''};
+  }
+  return null;
+}
+
+function getBillingRecordByProjectId(projectId) {
+  if(!projectId) return null;
+  return DB.billing_records.find(r=>r.projectId===projectId)||null;
+}
+
+function getBillingGateStatus(projectId) {
+  if(!projectId) {
+    return {passed:false,reason:'no_project',message:'No project linked to this ticket.',record:null,paidInvoices:[]};
+  }
+  const record=getBillingRecordByProjectId(projectId);
+  if(!record) {
+    return {passed:false,reason:'no_record',message:'No customer billing record for this project.',record:null,paidInvoices:[]};
+  }
+  const paidInvoices=DB.billing_invoices.filter(i=>i.recordId===record.id&&i.status==='Paid');
+  if(!paidInvoices.length) {
+    return {passed:false,reason:'no_paid_invoice',message:'Billing record exists but no invoice is marked Paid.',record,paidInvoices:[]};
+  }
+  return {passed:true,reason:'paid',message:'Paid invoice on file — PO gate open.',record,paidInvoices};
+}
+
 function ticketHasPaidBilling(projectId) {
-  if(!projectId) return false;
-  const record=DB.billing_records.find(r=>r.projectId===projectId);
-  if(!record) return false;
-  return DB.billing_invoices.some(inv=>inv.recordId===record.id&&inv.status==='Paid');
+  return getBillingGateStatus(projectId).passed;
+}
+
+function logSystemActivity(action, entity, details) {
+  DB.system_logs=DB.system_logs||[];
+  DB.system_logs.unshift({
+    id:uid(),dt:nowISO(),user:_currentUser?.name||'System',action,entity:entity||'',details:details||'',status:'success',
+  });
+  DB.system_logs=DB.system_logs.slice(0,200);
+}
+
+function onBillingPaymentRecorded(projectId, invoiceLabel) {
+  if(!projectId) return;
+  const proj=DB.projects.find(p=>p.id===projectId);
+  const affected=DB.tickets.filter(t=>t.projectId===projectId&&(t.status==='Pending Override'||t.status==='Pending'));
+  affected.forEach(t=>{
+    appendTicketAudit(t,'Billing updated',`Paid invoice recorded (${invoiceLabel||'payment'}) — PO gate may pass`);
+    if(t.status==='Pending Override'&&!t.bossApproved&&!t.financeApproved) t.status='Pending';
+  });
+  if(affected.length) {
+    pushNotification({
+      type:'green',title:'Billing payment logged',
+      text:`${affected.length} material ticket(s) for ${proj?.name||'project'} may proceed to PO.`,
+      roles:['po_officer','accountant','admin'],source:'billing',
+    });
+  }
+  updateOverrideNavBadge();
+  if(currentPage==='po-dashboard') renderPODashboard();
+  if(currentPage==='acc-dashboard') renderAccDashboard();
+}
+
+let _billingGateTicketId=null;
+
+function openBillingGateModal(ticket) {
+  _billingGateTicketId=ticket?.id||null;
+  const proj=DB.projects.find(p=>p.id===ticket?.projectId);
+  const gate=getBillingGateStatus(ticket?.projectId);
+  const client=proj?.client||ticket?.client||'Unknown Client';
+  const projectName=ticket?.project||proj?.name||'Unknown Project';
+  const msgEl=document.getElementById('billing-gate-msg');
+  if(msgEl) {
+    let extra='';
+    if(gate.reason==='no_record') extra=' No billing record exists yet for this project.';
+    else if(gate.reason==='no_paid_invoice') extra=' No customer invoice is marked Paid yet.';
+    msgEl.textContent=`No received payment on record for ${client} — ${projectName}.${extra}`;
+  }
+  const hid=document.getElementById('billing-gate-project-id');
+  if(hid) hid.value=ticket?.projectId||'';
+  openMo('mo-billing-gate');
+}
+
+function billingGateNotifyOverride() {
+  if(!_billingGateTicketId) { closeMo('mo-billing-gate'); return; }
+  notifyOverrideRequest(_billingGateTicketId);
+}
+
+function notifyOverrideRequest(ticketId) {
+  const ticket=DB.tickets.find(t=>t.id===ticketId);
+  if(!ticket) { toast('Error: Ticket not found.'); return; }
+  const proj=DB.projects.find(p=>p.id===ticket.projectId);
+  const projectName=ticket.project||proj?.name||'Unknown Project';
+  const client=proj?.client||ticket.client||'';
+  const requester=_currentUser?.name||'PO Officer';
+  const gate=getBillingGateStatus(ticket.projectId);
+  const gateNote=gate.message||'No paid customer invoice on file';
+
+  if(ticket.status!=='Pending Override') {
+    ticket.status='Pending Override';
+    ticket.bossApproved=false;
+    ticket.financeApproved=false;
+    appendTicketAudit(ticket,'Override requested',`${requester} asked Boss & Finance for a billing exception — ${projectName}`);
+  } else {
+    appendTicketAudit(ticket,'Override reminder sent',`${requester} re-notified Boss & Finance — ${projectName}`);
+  }
+
+  pushNotification({
+    type:'orange',
+    title:'Override / exception requested',
+    text:`${ticket.no} · ${projectName}${client?` (${client})`:''} — ${gateNote}. ${requester} is requesting Boss & Finance approval to allow PO creation without paid billing.`,
+    roles:['boss','accountant'],
+    source:'override-request',
+  });
+
+  logSystemActivity('Override notification sent',ticket.no,`Boss & Finance notified for ${projectName}`);
+  saveDB();
+  closeMo('mo-billing-gate');
+  updateOverrideNavBadge();
+  if(currentPage==='po-dashboard') renderPODashboard();
+  if(currentPage==='acc-dashboard') renderAccDashboard();
+  if(currentPage==='boss-dashboard') renderBossDashboard();
+  if(currentPage==='emp-ticket-detail') viewTicketDetail(ticketId);
+  toast('Boss and Finance have been notified to review this override request.','ok');
+}
+
+function renderBillingGatePanel(ticket, {compact=false,forPO=false}={}) {
+  if(!ticket?.projectId) return '';
+  const gate=getBillingGateStatus(ticket.projectId);
+  const record=gate.record;
+  const paidCnt=gate.paidInvoices?.length||0;
+  const cls=gate.passed?'billing-gate-ok':'billing-gate-blocked';
+  const icon=gate.passed?'✓':'⛔';
+  const label=gate.passed?`PO gate open — ${paidCnt} paid invoice(s) on file`:`PO gate blocked — ${gate.message}`;
+  if(compact) {
+    return `<div class="${cls}" style="padding:10px 12px;border-radius:var(--r);font-size:12px;margin-bottom:12px;">${icon} ${esc(label)}</div>`;
+  }
+  const recordBtn=forPO?'':(record
+    ?`<button type="button" class="btn btn-ol btn-sm" onclick="blOpenDetail('${record.id}')">Open billing record</button>`
+    :`<button type="button" class="btn btn-ol btn-sm" onclick="blOpenAddRecordModal('${ticket.projectId}')">+ Create billing record</button>`);
+  const overrideBtn=!gate.passed
+    ?(forPO
+      ?`<button type="button" class="btn btn-or btn-sm" onclick="notifyOverrideRequest('${ticket.id}')">Notify for Override</button>`
+      :`<button type="button" class="btn btn-bl btn-sm" onclick="navigate('boss-override-queue',document.querySelector('[data-page=boss-override-queue]'))">Override queue</button>`)
+    :'';
+  return `<div class="${cls}" style="padding:14px 16px;border-radius:var(--r);margin-bottom:14px;">
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px;">${icon} Billing / PO Gate</div>
+    <div style="font-size:12px;line-height:1.55;margin-bottom:10px;">${esc(label)}</div>
+    ${!forPO&&record?`<div style="font-size:11.5px;color:var(--soft);margin-bottom:10px;">Record: <strong>${esc(record.company)}</strong> · Contract ${peso(record.contractAmount)} · Collected ${peso(getBillingCollectedNet(record.id))}</div>`:''}
+    ${forPO&&!gate.passed?`<div style="font-size:11.5px;color:var(--soft);margin-bottom:10px;">Notify Boss and Finance to approve an exception if PO must proceed without paid billing.</div>`:''}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">${recordBtn}${overrideBtn}
+    </div>
+  </div>`;
 }
 
 function getPendingOverrideTickets() {
@@ -795,6 +1007,9 @@ function renderAccDashboard() {
       </div>
     </div>`;
 
+  const billingGateSec=document.getElementById('acc-dash-billing-gate');
+  if(billingGateSec) billingGateSec.innerHTML=buildBillingGateDashboardHTML();
+
   const overrideSec=document.getElementById('acc-dash-override-section');
   if(overrideSec) overrideSec.innerHTML=buildOverrideQueueHTML('finance', {compact:false, showViewAll:true});
 }
@@ -832,7 +1047,7 @@ function viewTicketDetail(id) {
       <span class="badge badge-${statusBadgeClass(t.status)}">${t.status}</span>
       ${t.urgent?'<span class="badge badge-urgent">⚡ URGENT</span>':''}
     </div>
-    ${t.status==='Pending Override'?`<div class="billing-gate-banner" style="margin-bottom:14px;">⛔ This ticket is blocked by the billing gate. Boss and Finance must approve an override, or a paid invoice must be logged in Billing.</div>`:''}
+    ${renderBillingGatePanel(t,{forPO:_currentUser?.role==='po_officer'})}
     <div class="fr2">
       <div><div class="form-lbl">PM</div><div style="font-weight:600;">${esc(t.pm)}</div></div>
       <div><div class="form-lbl">Project</div><div style="font-weight:600;">${esc(t.project)}</div></div>
@@ -885,13 +1100,17 @@ function initNewTicket() {
   matRows=[];
   document.getElementById('mat-entries').innerHTML='';
   document.getElementById('nt-pm').value=_currentUser?.role==='engineer' ? (_currentUser?.name||'') : '';
-  const sel=document.getElementById('nt-pn');
-  const assigned=_currentUser?.role==='engineer' ? (_currentUser?.assignedProjectIds||[]) : DB.projects.map(p=>p.id);
-  const activeProjects=DB.projects.filter(p=>p.status==='Active'&&assigned.includes(p.id));
-  if(sel) {
-    sel.innerHTML='<option value="">Select project...</option>'+activeProjects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
-    sel.value='';
-  }
+  const projCountBefore=DB.projects.length;
+  (DB.billing_records||[]).forEach(r=>ensureProjectForBillingRecord(r));
+  if(DB.projects.length>projCountBefore) saveDB();
+  buildDatalist();
+  const opts=getTicketProjectOptions();
+  const dl=document.getElementById('nt-pn-datalist');
+  if(dl) dl.innerHTML=opts.map(p=>`<option value="${esc(p.name)}">`).join('');
+  const pn=document.getElementById('nt-pn');
+  const hid=document.getElementById('nt-project-id');
+  if(pn) pn.value='';
+  if(hid) hid.value='';
   const clientRow=document.getElementById('nt-client-row');
   const clientEl=document.getElementById('nt-client');
   if(clientRow) clientRow.style.display='none';
@@ -913,10 +1132,11 @@ function prefillStockInDemo() {
 }
 
 function fillSampleTicketForm() {
-  const sel=document.getElementById('nt-pn');
   const assigned=_currentUser?.assignedProjectIds||['PROJ002'];
   const projId=assigned.includes('PROJ002')?'PROJ002':assigned[0];
-  if(sel&&projId) { sel.value=projId; onTicketProjectChange(); }
+  const proj=DB.projects.find(p=>p.id===projId);
+  const pn=document.getElementById('nt-pn');
+  if(pn&&proj) { pn.value=proj.name; onTicketProjectInput(); }
   const site=document.getElementById('nt-site');
   if(site) site.value='Ground floor, operatory wing';
   const dn=document.getElementById('nt-date-needed');
@@ -937,15 +1157,32 @@ function fillSampleTicketForm() {
   toast('Sample values loaded — edit or submit.','ok');
 }
 
-function onTicketProjectChange() {
-  const sel=document.getElementById('nt-pn');
-  const proj=DB.projects.find(p=>p.id===(sel?.value||''));
+function onTicketProjectInput() {
+  const name=document.getElementById('nt-pn')?.value||'';
+  const resolved=resolveTicketProjectByName(name);
+  const hid=document.getElementById('nt-project-id');
   const clientRow=document.getElementById('nt-client-row');
   const clientEl=document.getElementById('nt-client');
-  if(proj&&clientRow&&clientEl) {
-    clientRow.style.display='block';
-    clientEl.value=proj.client||'';
-  } else if(clientRow) {
+  if(resolved) {
+    if(hid) hid.value=resolved.id;
+    if(clientRow&&clientEl) {
+      clientRow.style.display='block';
+      clientEl.value=resolved.client;
+    }
+    return;
+  }
+  if(hid) hid.value='';
+  const q=name.trim().toLowerCase();
+  if(q.length>=2) {
+    const br=(DB.billing_records||[]).find(r=>(r.project||'').toLowerCase()===q
+      ||(r.project||'').toLowerCase().startsWith(q));
+    if(br&&clientRow&&clientEl) {
+      clientRow.style.display='block';
+      clientEl.value=br.company||'';
+      return;
+    }
+  }
+  if(clientRow) {
     clientRow.style.display='none';
     if(clientEl) clientEl.value='';
   }
@@ -969,15 +1206,38 @@ function removeMatRow(id) { matRows=matRows.filter(x=>x!==id); document.getEleme
 
 function submitTicket() {
   const pm=document.getElementById('nt-pm').value.trim();
-  const projectId=document.getElementById('nt-pn').value.trim();
+  const projectName=(document.getElementById('nt-pn')?.value||'').trim();
+  let projectId=(document.getElementById('nt-project-id')?.value||'').trim();
   const siteLocation=(document.getElementById('nt-site')?.value||'').trim();
   const dn=document.getElementById('nt-date-needed').value;
   const urg=document.getElementById('nt-urg').checked;
   const remarks=document.getElementById('nt-remarks').value.trim();
-  if(!pm||!projectId) { toast('Error: PM and Project are required.'); return; }
-  const projMatch=DB.projects.find(p=>p.id===projectId);
-  if(!projMatch) { toast('Warning: Project not found. Select a project from your assigned list.'); return; }
-  const pn=projMatch.name;
+  if(!pm||!projectName) { toast('Error: PM and Project are required.'); return; }
+  let resolved=projectId?DB.projects.find(p=>p.id===projectId):null;
+  if(!resolved) {
+    const match=resolveTicketProjectByName(projectName);
+    if(match) { projectId=match.id; resolved=DB.projects.find(p=>p.id===projectId); }
+  }
+  if(!resolved) {
+    const br=(DB.billing_records||[]).find(r=>(r.project||'').toLowerCase()===projectName.toLowerCase());
+    if(br) {
+      ensureProjectForBillingRecord(br);
+      projectId=br.projectId;
+      resolved=DB.projects.find(p=>p.id===projectId);
+      saveDB();
+      buildDatalist();
+    }
+  }
+  if(!resolved) {
+    toast('Error: Project not found. Pick a name from the list (includes Customer Billing jobs).');
+    return;
+  }
+  const allowed=getTicketProjectOptions();
+  if(_currentUser?.role==='engineer'&&!allowed.some(o=>o.id===resolved.id)) {
+    toast('Error: This project is not available for your account.');
+    return;
+  }
+  const pn=resolved.name;
   const mats=[];
   for(const id of matRows) {
     const n=document.getElementById('matn-'+id)?.value.trim();
@@ -1554,6 +1814,8 @@ function convertTicketToPO(ticketId) {
   }
 
   if(ticketHasPaidBilling(ticket.projectId)) {
+    appendTicketAudit(ticket,'Billing gate passed','Paid customer invoice on file — PO allowed');
+    saveDB();
     proceedConvertTicketToPO(ticket);
     return;
   }
@@ -1567,10 +1829,8 @@ function convertTicketToPO(ticketId) {
   ticket.financeApproved=false;
   saveDB();
 
-  const msgEl=document.getElementById('billing-gate-msg');
-  if(msgEl) msgEl.textContent=`No received payment on record for ${client} — ${projectName}. A downpayment must be logged in Billing, or Boss & Finance must approve an override.`;
-  openMo('mo-billing-gate');
-  toast('Warning: Billing gate blocked. Ticket moved to Pending Override.','warn');
+  openBillingGateModal(ticket);
+  toast('Billing gate blocked. Use Notify for Override to alert Boss and Finance.','warn');
 
   if(currentPage==='po-dashboard') renderPODashboard();
   if(currentPage==='acc-dashboard') renderAccDashboard();
@@ -2194,9 +2454,16 @@ function renderPODashboard() {
       : `<div class="dash-grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;">
           ${requests.slice(0,6).map(t=>{
             const materials=t.materials.map(m=>m.name.split(':').pop()).join(', ');
+            const gate=getBillingGateStatus(t.projectId);
+            const gateLbl=t.status==='Pending Override'
+              ?'<span class="badge badge-pending-override" style="font-size:9px;">Override</span>'
+              :gate.passed
+                ?'<span class="badge badge-ok" style="font-size:9px;">Billing OK</span>'
+                :'<span class="badge badge-unpaid" style="font-size:9px;">No paid inv.</span>';
             return `<div class="dash-widget" style="margin:0;">
               <div class="dash-widget-head">
                 <div class="dash-widget-title" style="color:var(--mg);font-size:12px;">${esc(t.no)}</div>
+                ${gateLbl}
                 ${t.urgent?'<span class="badge badge-urgent" style="font-size:9px;">URGENT</span>':''}
               </div>
               <div class="dash-widget-body" style="padding:12px 14px;">
@@ -2205,6 +2472,7 @@ function renderPODashboard() {
                 <div style="font-size:11px;color:var(--faint);line-height:1.6;">PM: ${esc(t.pm||'–')}<br>Requested: ${fmtDate((t.submittedAt||'').split('T')[0])}<br>Materials: ${esc(materials||'–')}</div>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
                   <button class="btn btn-ol btn-sm" onclick="viewTicketDetail('${t.id}')">Review</button>
+                  ${!gate.passed&&!(t.bossApproved&&t.financeApproved)?`<button class="btn btn-or btn-sm" onclick="notifyOverrideRequest('${t.id}')">${t.status==='Pending Override'?'Resend override notice':'Notify for Override'}</button>`:''}
                   <button class="btn btn-mg btn-sm" onclick="convertTicketToPO('${t.id}')">Create PO</button>
                 </div>
               </div>
@@ -2599,6 +2867,110 @@ function saveNewItem() {
 // ── BILLING ───────────────────────────────────────────────────
 let activeBillingId=null, editingInvoiceId=null;
 
+function buildBillingGateDashboardHTML() {
+  const blocked=DB.tickets.filter(t=>{
+    if(t.status!=='Pending Override'&&t.status!=='Pending') return false;
+    return !ticketHasPaidBilling(t.projectId)&&!(t.bossApproved&&t.financeApproved);
+  }).slice(0,8);
+  if(!blocked.length) {
+    return `<div class="dash-widget" style="margin-bottom:18px;">
+      <div class="dash-widget-head"><div class="dash-widget-title" style="color:var(--gn);">💰 Billing / PO Gate</div><span class="badge badge-ok">Clear</span></div>
+      <div class="dash-widget-body"><div class="empty-state" style="padding:20px;"><div class="empty-icon">✓</div>All active tickets have payment or override in place.</div></div>
+    </div>`;
+  }
+  return `<div class="dash-widget" style="margin-bottom:18px;">
+    <div class="dash-widget-head"><div class="dash-widget-title" style="color:var(--or);">💰 Billing Gate — Blocked Tickets</div><span class="badge badge-pending-override">${blocked.length}</span></div>
+    <div class="dash-widget-body no-pad">
+      ${blocked.map(t=>{
+        const gate=getBillingGateStatus(t.projectId);
+        return `<div class="alert-row" style="flex-wrap:wrap;gap:8px;">
+          <div style="flex:1;min-width:160px;">
+            <div style="font-weight:700;font-size:12px;">${esc(t.no)} · ${esc(t.project)}</div>
+            <div style="font-size:11px;color:var(--faint);">${gate.reason==='no_record'?'No billing record':gate.reason==='no_paid_invoice'?'No paid invoice':'Awaiting override'}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${gate.record?`<button type="button" class="btn btn-gn btn-sm" onclick="blOpenDetail('${gate.record.id}')">Billing</button>`:`<button type="button" class="btn btn-ol btn-sm" onclick="blOpenAddRecordModal('${t.projectId||''}')">+ Billing</button>`}
+            <button type="button" class="btn btn-ol btn-sm" onclick="viewTicketDetail('${t.id}')">Ticket</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function blOpenAddRecordModal(prefillProjectId) {
+  ['bl-add-company','bl-add-project','bl-add-contract','bl-add-tin'].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.value='';
+  });
+  const tax=document.getElementById('bl-add-tax'); if(tax) tax.value='VAT';
+  const ewt=document.getElementById('bl-add-ewt'); if(ewt) ewt.value='2';
+  const sel=document.getElementById('bl-add-project-id');
+  if(sel) {
+    const linkProjects=DB.projects.filter(p=>p.status==='Active');
+    if(prefillProjectId&&!linkProjects.some(p=>p.id===prefillProjectId)) {
+      const extra=DB.projects.find(p=>p.id===prefillProjectId);
+      if(extra) linkProjects.unshift(extra);
+    }
+    sel.innerHTML='<option value="">None — billing only (manual entry)</option>'+
+      linkProjects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+    sel.value=prefillProjectId||'';
+    if(prefillProjectId) blOnBillingProjectPick();
+    else {
+      const projEl=document.getElementById('bl-add-project');
+      if(projEl) projEl.focus();
+    }
+  }
+  openMo('mo-add-billing');
+}
+
+function blOnBillingProjectNameInput() {
+  const name=(document.getElementById('bl-add-project')?.value||'').trim();
+  const sel=document.getElementById('bl-add-project-id');
+  if(!sel||!name) return;
+  const match=DB.projects.find(p=>p.name.toLowerCase()===name.toLowerCase());
+  if(match) sel.value=match.id;
+  else if(sel.value) {
+    const linked=DB.projects.find(p=>p.id===sel.value);
+    if(linked&&linked.name.toLowerCase()!==name.toLowerCase()) sel.value='';
+  }
+}
+
+function blOnBillingProjectPick() {
+  const id=document.getElementById('bl-add-project-id')?.value||'';
+  const p=DB.projects.find(x=>x.id===id);
+  const companyEl=document.getElementById('bl-add-company');
+  const projectEl=document.getElementById('bl-add-project');
+  const contractEl=document.getElementById('bl-add-contract');
+  if(!p) return;
+  if(companyEl) companyEl.value=p.client||'';
+  if(projectEl) projectEl.value=p.name;
+  if(contractEl) contractEl.value=p.contractAmount||'';
+}
+
+function blExportExcel() {
+  const rows=[['Company','Project','Project ID','Contract','Collected Net','Outstanding','PO Gate','TIN','Tax','Status']];
+  DB.billing_records.forEach(r=>{
+    const gate=r.projectId?getBillingGateStatus(r.projectId):{passed:false};
+    rows.push([
+      r.company,r.project,r.projectId||'',r.contractAmount,getBillingCollectedNet(r.id),getBillingOutstanding(r.id),
+      gate.passed?'Open':'Blocked',r.tin||'',r.taxType||'',r.status||'',
+    ]);
+  });
+  rows.push([]);
+  rows.push(['Invoice #','Company','Project','Invoice Date','Description','Amount','Status','Paid Date']);
+  DB.billing_invoices.forEach(inv=>{
+    const rec=DB.billing_records.find(x=>x.id===inv.recordId);
+    rows.push([inv.invoiceNo,rec?.company||'',rec?.project||'',inv.invoiceDate,inv.desc,inv.baseAmount,inv.status,inv.paidDate||'']);
+  });
+  const csv=rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob=new Blob([csv],{type:'text/csv'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='rsci-billing-'+today()+'.csv';
+  a.click();
+  toast('Billing export downloaded.','ok');
+}
+
 function calcInvoiceAmounts(baseAmount,ewtRate,dedAmt,taxType) {
   const gross=parseFloat(baseAmount)||0;
   const netVat=taxType==='VAT'?+(gross/1.12).toFixed(2):gross;
@@ -2649,12 +3021,17 @@ function blRenderList() {
       const outstanding=(parseFloat(r.contractAmount)||0)-totalPaid;
       const pct2=parseFloat(r.contractAmount)>0?Math.round(totalPaid/parseFloat(r.contractAmount)*100):0;
       const overdue=invs.find(i=>i.status!=='Paid'&&i.dueDate&&new Date(i.dueDate+'T00:00:00')<new Date());
+      const gate=r.projectId?getBillingGateStatus(r.projectId):{passed:false};
+      const gateBadge=gate.passed
+        ?'<span class="badge badge-ok" style="font-size:9px;">PO gate open</span>'
+        :'<span class="badge badge-unpaid" style="font-size:9px;">PO gate blocked</span>';
+      const projCode=r.projectId?`<span style="font-size:10px;color:var(--faint);">${esc(r.projectId)}</span>`:'';
       return `<div style="display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid var(--bd);cursor:pointer;flex-wrap:wrap;" onmouseover="this.style.background='#fdf5fa'" onmouseout="this.style.background=''" onclick="blOpenDetail('${r.id}')">
-        <div style="flex:2;min-width:180px;"><div style="font-family:'Syne',sans-serif;font-size:13px;font-weight:800;">${esc(r.company)}</div><div style="font-size:11.5px;color:var(--faint);">${esc(r.project||'–')}</div></div>
+        <div style="flex:2;min-width:180px;"><div style="font-family:'Syne',sans-serif;font-size:13px;font-weight:800;">${esc(r.company)}</div><div style="font-size:11.5px;color:var(--faint);">${esc(r.project||'–')} ${projCode}</div></div>
         <div style="flex:1;min-width:120px;"><div style="font-size:10.5px;color:var(--faint);">Contract</div><div style="font-weight:700;">${peso(r.contractAmount)}</div></div>
-        <div style="flex:1;min-width:120px;"><div style="font-size:10.5px;color:var(--faint);">Collected</div><div style="font-weight:700;color:var(--gn);">${peso(totalPaid)}</div><div style="height:4px;background:var(--paper);border-radius:2px;margin-top:4px;"><div style="height:4px;background:var(--gn);border-radius:2px;width:${pct2}%;"></div></div></div>
+        <div style="flex:1;min-width:120px;"><div style="font-size:10.5px;color:var(--faint);">Collected (net)</div><div style="font-weight:700;color:var(--gn);">${peso(getBillingCollectedNet(r.id))}</div><div style="height:4px;background:var(--paper);border-radius:2px;margin-top:4px;"><div style="height:4px;background:var(--gn);border-radius:2px;width:${pct2}%;"></div></div></div>
         <div style="flex:1;min-width:120px;"><div style="font-size:10.5px;color:var(--faint);">Outstanding</div><div style="font-weight:700;color:${outstanding>0?'var(--or)':'var(--gn)'};">${peso(outstanding)}</div></div>
-        <div>${overdue?'<span class="bl-inv-overdue">Overdue</span>':''} <span style="font-size:10.5px;color:var(--soft);">${invs.length} invoice(s)</span></div>
+        <div style="min-width:100px;">${gateBadge} ${overdue?'<span class="bl-inv-overdue">Overdue</span>':''}<br><span style="font-size:10.5px;color:var(--soft);">${invs.length} invoice(s)</span></div>
         <div style="color:var(--mg);">→</div>
       </div>`;
     }).join('');
@@ -2666,19 +3043,30 @@ function blOpenDetail(id) {
   const invs=DB.billing_invoices.filter(i=>i.recordId===id);
   const totalPaid=getBillingCollectedNet(id);
   const outstanding=getBillingOutstanding(id);
+  const gate=r.projectId?getBillingGateStatus(r.projectId):{passed:false};
+  const linkedTkts=DB.tickets.filter(t=>t.projectId===r.projectId&&t.status!=='Completed').slice(0,5);
+  const canEditBilling=['admin','accountant'].includes(_currentUser?.role||'');
   document.getElementById('bl-side-info').innerHTML=`
     <div class="si-row"><div class="si-label">Company</div><div class="si-val" style="font-weight:700;">${esc(r.company)}</div></div>
     <div class="si-row"><div class="si-label">Project</div><div class="si-val">${esc(r.project||'–')}</div></div>
+    <div class="si-row"><div class="si-label">Project ID</div><div class="si-val">${esc(r.projectId||'–')}</div></div>
+    <div class="si-row"><div class="si-label">PO Gate</div><div class="si-val">${gate.passed?'<span style="color:#7aff7a;font-weight:700;">Open</span>':'<span style="color:#ffbb88;font-weight:700;">Blocked</span>'}</div></div>
     <div class="si-row"><div class="si-label">Contract Amount</div><div class="si-val" style="font-weight:700;">${peso(r.contractAmount)}</div></div>
     <div class="si-row"><div class="si-label">Total Collected</div><div class="si-val" style="color:#7aff7a;font-weight:700;">${peso(totalPaid)}</div></div>
     <div class="si-row"><div class="si-label">Outstanding</div><div class="si-val" style="color:${outstanding>0?'#ffbb88':'#7aff7a'};font-weight:700;">${peso(outstanding)}</div></div>
     <div class="si-row"><div class="si-label">TIN</div><div class="si-val">${esc(r.tin||'–')}</div></div>
-    <button class="btn btn-mg btn-sm" onclick="blOpenAddInvoiceModal()" style="width:100%;justify-content:center;margin-top:10px;">+ Add Invoice</button>
+    ${linkedTkts.length?`<div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.15);">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:rgba(255,255,255,.45);margin-bottom:8px;">Linked material tickets</div>
+      ${linkedTkts.map(t=>`<div style="font-size:11px;margin-bottom:6px;cursor:pointer;text-decoration:underline;" onclick="viewTicketDetail('${t.id}')">${esc(t.no)} · ${esc(t.status)}</div>`).join('')}
+    </div>`:''}
+    ${canEditBilling?`<button class="btn btn-mg btn-sm" onclick="blOpenAddInvoiceModal()" style="width:100%;justify-content:center;margin-top:10px;">+ Add Invoice</button>`:''}
     <button class="btn btn-ol btn-sm" onclick="blPrintStatement('${id}')" style="width:100%;justify-content:center;margin-top:6px;">Print Statement</button>
     <button class="btn btn-ol btn-sm" onclick="navigate('billing-list',document.querySelector('[data-page=billing-list]'))" style="width:100%;justify-content:center;margin-top:6px;background:rgba(255,255,255,.1);color:rgba(255,255,255,.7);border-color:rgba(255,255,255,.2);">← Back</button>`;
-  document.getElementById('bl-detail-content').innerHTML=`<div style="padding:22px 28px;">
-    <div style="font-family:'Syne',sans-serif;font-size:15px;font-weight:800;color:var(--mg);margin-bottom:18px;">${esc(r.company)}</div>
-    ${!invs.length?'<div class="empty-state"><div class="empty-icon">📄</div>No invoices yet.</div>':
+  document.getElementById('bl-detail-content').innerHTML=`<div style="padding:22px 28px;" data-billing-readonly="${canEditBilling?'0':'1'}">
+    <div style="font-family:'Syne',sans-serif;font-size:15px;font-weight:800;color:var(--mg);margin-bottom:12px;">${esc(r.company)}</div>
+    ${r.projectId?`<div style="margin-bottom:16px;">${renderBillingGatePanel({projectId:r.projectId,project:r.project,id:'billing-view'}, {compact:true})}</div>`:''}
+    ${!gate.passed?`<div style="font-size:12px;color:var(--soft);margin:-8px 0 14px;padding:10px 12px;background:var(--paper);border-radius:var(--r);">Mark an invoice as <strong>Paid</strong> to unlock PO creation for engineers on this project (unless Boss &amp; Finance approve an override).</div>`:''}
+    ${!invs.length?'<div class="empty-state"><div class="empty-icon">📄</div>No invoices yet. Add a mobilization or downpayment invoice and mark it Paid.</div>':
     `<div class="tbl-wrap" style="box-shadow:none;border:none;border-radius:0;"><table>
       <thead><tr><th>Invoice #</th><th>Date</th><th>Description</th><th style="text-align:right;">Amount</th><th style="text-align:right;">Net Due</th><th>Status</th><th>Due Date</th><th></th></tr></thead>
       <tbody>${invs.map(inv=>{
@@ -2692,7 +3080,10 @@ function blOpenDetail(id) {
           <td style="text-align:right;font-weight:700;color:var(--mg);">${peso(a.net)}</td>
           <td><span class="${inv.status==='Paid'?'bl-inv-paid':isOverdue?'bl-inv-overdue':'bl-inv-unpaid'}">${isOverdue?'Overdue':inv.status}</span></td>
           <td>${fmtDate(inv.dueDate)}</td>
-          <td>${inv.status!=='Paid'?`<button class="btn btn-gn btn-sm" onclick="blMarkPaid('${inv.id}')">Mark Paid</button>`:''}</td>
+          <td style="white-space:nowrap;">
+            ${canEditBilling&&inv.status!=='Paid'?`<button class="btn btn-gn btn-sm" onclick="blMarkPaid('${inv.id}')">Mark Paid</button>`:''}
+            ${canEditBilling?`<button class="btn btn-ol btn-sm" onclick="blOpenAddInvoiceModal('${inv.id}')">Edit</button>`:''}
+          </td>
         </tr>`;
       }).join('')}</tbody></table></div>`}
   </div>`;
@@ -2767,9 +3158,16 @@ function blPrintStatement(recordId) {
 }
 
 function blMarkPaid(invId) {
-  const inv=DB.billing_invoices.find(i=>i.id===invId); if(!inv) return;
-  inv.status='Paid'; inv.paidDate=today();
-  saveDB(); blOpenDetail(activeBillingId); toast('Invoice marked as paid.','ok');
+  const inv=DB.billing_invoices.find(i=>i.id===invId);
+  if(!inv||inv.status==='Paid') return;
+  const record=DB.billing_records.find(r=>r.id===inv.recordId);
+  inv.status='Paid';
+  inv.paidDate=today();
+  logSystemActivity('Invoice marked paid',record?.project||inv.invoiceNo,`${inv.invoiceNo||''} — ${inv.desc||''}`);
+  if(record?.projectId) onBillingPaymentRecorded(record.projectId, inv.desc||inv.invoiceNo);
+  saveDB();
+  blOpenDetail(activeBillingId);
+  toast('Invoice marked paid. PO gate updated for this project.','ok');
 }
 
 function blOpenAddInvoiceModal(invId) {
@@ -2786,6 +3184,9 @@ function blOpenAddInvoiceModal(invId) {
       document.getElementById('blinv-due').value=inv.dueDate||'';
       document.getElementById('blinv-ewt-rate').value=inv.ewtRate||r?.ewtRate||2;
       document.getElementById('blinv-ded-amt').value=inv.dedAmt||0;
+      const st=document.getElementById('blinv-status'); if(st) st.value=inv.status||'Unpaid';
+      const pd=document.getElementById('blinv-paid-date'); if(pd) pd.value=inv.paidDate||today();
+      blToggleInvoicePaidFields();
     }
   } else {
     ['blinv-no','blinv-desc'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
@@ -2794,6 +3195,9 @@ function blOpenAddInvoiceModal(invId) {
     document.getElementById('blinv-due').value='';
     document.getElementById('blinv-ewt-rate').value=r?.ewtRate||2;
     document.getElementById('blinv-ded-amt').value=0;
+    const st=document.getElementById('blinv-status'); if(st) st.value='Unpaid';
+    const pd=document.getElementById('blinv-paid-date'); if(pd) pd.value=today();
+    blToggleInvoicePaidFields();
   }
   blUpdateInvoicePreview();
   openMo('mo-add-invoice');
@@ -2810,12 +3214,36 @@ function blUpdateInvoicePreview() {
   set('blinv-ded-preview',`−${peso(a.ded)}`); set('blinv-amount-due-preview',peso(a.net));
 }
 
+function blToggleInvoicePaidFields() {
+  const st=document.getElementById('blinv-status')?.value;
+  const row=document.getElementById('blinv-paid-date-row');
+  if(row) row.style.display=st==='Paid'?'block':'none';
+}
+
 function blSaveRecord() {
   const company=document.getElementById('bl-add-company')?.value.trim();
   const project=document.getElementById('bl-add-project')?.value.trim();
+  let projectId=document.getElementById('bl-add-project-id')?.value||'';
   if(!company) { toast('Error: Company name is required.'); return; }
-  const rec={id:uid(),company,project,contractAmount:parseFloat(document.getElementById('bl-add-contract')?.value)||0,taxType:document.getElementById('bl-add-tax')?.value||'VAT',ewtRate:parseFloat(document.getElementById('bl-add-ewt')?.value)||2,tin:document.getElementById('bl-add-tin')?.value.trim()||'',status:'active',createdAt:today()};
-  DB.billing_records.unshift(rec); saveDB(); blRenderList(); closeMo('mo-add-billing'); toast('Billing record added.','ok');
+  if(!project) { toast('Error: Awarded project name is required.'); return; }
+  const rec={
+    id:uid(),company,project,
+    projectId:projectId||null,
+    contractAmount:parseFloat(document.getElementById('bl-add-contract')?.value)||0,
+    taxType:document.getElementById('bl-add-tax')?.value||'VAT',
+    ewtRate:parseFloat(document.getElementById('bl-add-ewt')?.value)||2,
+    tin:document.getElementById('bl-add-tin')?.value.trim()||'',
+    status:'active',createdAt:today(),
+  };
+  reconcileBillingRecordProject(rec);
+  ensureProjectForBillingRecord(rec);
+  DB.billing_records.unshift(rec);
+  logSystemActivity('Billing record created',rec.project,`Synced to project ${rec.projectId||'—'} — visible on engineer tickets`);
+  saveDB();
+  buildDatalist();
+  blRenderList();
+  closeMo('mo-add-billing');
+  toast('Billing record added. Engineers can select this project on material tickets.','ok');
 }
 
 function blSaveInvoice() {
@@ -2827,10 +3255,21 @@ function blSaveInvoice() {
   const ewtRate=parseFloat(document.getElementById('blinv-ewt-rate')?.value)||0;
   const dedAmt=parseFloat(document.getElementById('blinv-ded-amt')?.value)||0;
   if(!desc||!baseAmount) { toast('Error: Description and amount are required.'); return; }
-  const inv={id:editingInvoiceId||uid(),recordId:activeBillingId,invoiceNo,invoiceDate,dueDate,desc,baseAmount,ewtRate,dedAmt,status:'Unpaid',paidDate:''};
+  const status=document.getElementById('blinv-status')?.value||'Unpaid';
+  const paidDate=status==='Paid'?(document.getElementById('blinv-paid-date')?.value||today()):'';
+  const inv={id:editingInvoiceId||uid(),recordId:activeBillingId,invoiceNo,invoiceDate,dueDate,desc,baseAmount,ewtRate,dedAmt,status,paidDate};
+  const wasUnpaid=editingInvoiceId?DB.billing_invoices.find(i=>i.id===editingInvoiceId)?.status!=='Paid':true;
   if(editingInvoiceId) { const idx=DB.billing_invoices.findIndex(i=>i.id===editingInvoiceId); if(idx>=0) DB.billing_invoices[idx]=inv; }
   else DB.billing_invoices.unshift(inv);
-  saveDB(); blOpenDetail(activeBillingId); closeMo('mo-add-invoice'); toast('Invoice saved.','ok');
+  const record=DB.billing_records.find(r=>r.id===activeBillingId);
+  if(status==='Paid'&&wasUnpaid&&record?.projectId) {
+    logSystemActivity('Invoice saved as paid',record.project,inv.desc||'');
+    onBillingPaymentRecorded(record.projectId, inv.desc||inv.invoiceNo);
+  }
+  saveDB();
+  blOpenDetail(activeBillingId);
+  closeMo('mo-add-invoice');
+  toast(status==='Paid'?'Invoice saved and marked Paid — PO gate updated.':'Invoice saved.','ok');
 }
 
 // ── SUBCONTRACTORS ────────────────────────────────────────────
@@ -3015,9 +3454,11 @@ function buildOverrideQueueHTML(approverRole, opts={}) {
     const client=proj?.client||'–';
     const engineer=t.engineerName||t.submittedBy||'–';
     const canAct=approverRole==='boss' ? !t.bossApproved : !t.financeApproved;
+    const gate=t.projectId?getBillingGateStatus(t.projectId):{passed:false};
+    const billHint=gate.passed?'Paid inv.':'No paid inv.';
     return `<tr>
       <td style="font-family:'Syne',sans-serif;font-weight:800;color:var(--mg);">${esc(t.no)}</td>
-      <td>${esc(t.project)}</td>
+      <td>${esc(t.project)}<br><span style="font-size:10px;color:var(--faint);">${esc(billHint)}</span></td>
       <td style="font-size:12px;color:var(--soft);">${esc(client)}</td>
       <td>${esc(engineer)}</td>
       <td style="font-size:11.5px;color:var(--faint);">${fmtDate((t.submittedAt||'').split('T')[0])}</td>
@@ -3037,7 +3478,7 @@ function buildOverrideQueueHTML(approverRole, opts={}) {
     <div class="dash-widget-body ${compact?'no-pad':''}">
       <div class="tbl-wrap" style="border:none;box-shadow:none;">
         <table><thead><tr>
-          <th>Ticket #</th><th>Project</th><th>Client</th><th>Engineer</th><th>Submitted</th><th>Approvals</th><th>${roleLabel} Action</th>
+          <th>Ticket #</th><th>Project / Billing</th><th>Client</th><th>Engineer</th><th>Submitted</th><th>Approvals</th><th>${roleLabel} Action</th>
         </tr></thead><tbody>${rows}</tbody></table>
       </div>
     </div>
@@ -3166,21 +3607,22 @@ function renderBossBillingSummary() {
   const el=document.getElementById('boss-billing-summary');
   if(!el) return;
   const rows=DB.billing_records.map(r=>{
-    const invs=DB.billing_invoices.filter(i=>i.recordId===r.id);
-    const paid=invs.filter(i=>i.status==='Paid').reduce((s,i)=>s+(parseFloat(i.baseAmount)||0),0);
-    const unpaid=invs.filter(i=>i.status!=='Paid').reduce((s,i)=>s+(parseFloat(i.baseAmount)||0),0);
-    return `<tr>
+    const collected=getBillingCollectedNet(r.id);
+    const outstanding=getBillingOutstanding(r.id);
+    const gate=r.projectId?getBillingGateStatus(r.projectId):{passed:false};
+    return `<tr style="cursor:pointer;" onclick="blOpenDetail('${r.id}')">
       <td style="font-weight:600;">${esc(r.company)}</td>
-      <td>${esc(r.project)}</td>
+      <td>${esc(r.project)}<br><span style="font-size:10px;color:var(--faint);">${esc(r.projectId||'–')}</span></td>
       <td style="text-align:right;">${peso(r.contractAmount)}</td>
-      <td style="text-align:right;color:var(--gn);font-weight:700;">${peso(paid)}</td>
-      <td style="text-align:right;color:var(--or);font-weight:700;">${peso(unpaid)}</td>
-      <td><span class="badge badge-${r.status==='active'?'ok':'pending'}">${esc(r.status)}</span></td>
+      <td style="text-align:right;color:var(--gn);font-weight:700;">${peso(collected)}</td>
+      <td style="text-align:right;color:var(--or);font-weight:700;">${peso(outstanding)}</td>
+      <td><span class="badge badge-${gate.passed?'ok':'unpaid'}">${gate.passed?'PO OK':'Blocked'}</span></td>
     </tr>`;
   }).join('');
   el.innerHTML=`<div class="tbl-wrap"><table>
-    <thead><tr><th>Company</th><th>Project</th><th style="text-align:right;">Contract</th><th style="text-align:right;">Paid</th><th style="text-align:right;">Unpaid</th><th>Status</th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
+    <thead><tr><th>Company</th><th>Project</th><th style="text-align:right;">Contract</th><th style="text-align:right;">Collected</th><th style="text-align:right;">Outstanding</th><th>PO Gate</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>
+    <p style="font-size:11.5px;color:var(--faint);padding:12px 16px;">Read-only view. Accountants manage invoices under Billing.</p>`;
 }
 
 // ── TICKET HISTORY ────────────────────────────────────────────
