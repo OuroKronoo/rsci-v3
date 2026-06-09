@@ -59,10 +59,11 @@
       <details class="demo-flow-hint">
         <summary>Suggested presentation flow</summary>
         <ol>
-          <li><strong>Boss</strong> — Override Queue → approve TKT-2026-004</li>
+          <li><strong>Boss</strong> — Override Queue → approve ORD-2026-004</li>
           <li><strong>Accountant</strong> — Billing → mark Maxicare mobilization Paid, or approve TKT-2026-006 override</li>
-          <li><strong>PO Officer</strong> — Create PO from TKT-2026-005 (Smilee has paid invoice) or TKT-2026-004 after overrides</li>
-          <li><strong>Engineer</strong> — New Request → sample pre-filled → Submit</li>
+          <li><strong>Inventory Mgr</strong> — Material Orders → review ORD-2026-002 or ORD-2026-005, release warehouse stock</li>
+          <li><strong>PO Officer</strong> — Create PO from ORD-2026-001 shortages (after inventory review)</li>
+          <li><strong>Engineer</strong> — New Request → submit order (gets ORD number)</li>
           <li><strong>Admin</strong> — Projects → Engineer Assignments</li>
         </ol>
       </details>
@@ -153,7 +154,7 @@
         <div class="panel-inner">
           <div class="panel-side">
             <button class="side-submit-btn" onclick="navigate('emp-new-ticket')">SUBMIT A TICKET</button>
-            <div class="side-info">Request materials for your project. Your ticket is reviewed by the Accountant/Admin.</div>
+            <div class="side-info">Submit a material order for your project. It goes to Inventory Manager first, then PO Officer for items to buy.</div>
           </div>
           <div class="panel-content">
             <div id="emp-ticket-list"></div>
@@ -307,9 +308,10 @@
         <div class="stat-card"><div class="stat-lbl">Received</div><div class="stat-val" id="po-stat-received">–</div></div>
       </div>
       <div class="sec-hdr" style="margin-top:18px;">
-        <div class="sec-title" style="font-size:13px;">Engineer Requests</div>
-        <span class="badge badge-partial" id="po-req-cnt">–</span>
+        <div class="sec-title" style="font-size:13px;">Purchase Shortages (after inventory review)</div>
+        <span class="badge badge-at-po" id="po-req-cnt">–</span>
       </div>
+      <div style="font-size:11.5px;color:var(--faint);margin:-10px 0 12px;">Only orders that still need buying appear here — Inventory Manager must release warehouse stock first.</div>
       <div id="po-req-list"></div>
       <div class="sec-hdr" style="margin-top:18px;">
         <div class="sec-title" style="font-size:13px;">All Purchase Orders</div>
@@ -469,12 +471,12 @@
               <div class="stat-val" style="font-size:16px;letter-spacing:-1px;" id="sc-billed-val">–</div>
             </div>
           </div>
-          <div class="tbl-wrap" id="subcon-list-wrap"></div>
+          <div id="subcon-list"></div>
         </div>
-        <div id="subcon-detail-wrap">
+        <div id="sc-detail-body">
           <div class="card" style="padding:40px;text-align:center;color:var(--faint);">
             <div style="font-size:36px;margin-bottom:10px;">👷</div>
-            <div style="font-size:13px;">Select a subcontractor to view details</div>
+            <div style="font-size:13px;">Select a subcontractor from the list to view their ledger and billing history.</div>
           </div>
         </div>
       </div>
@@ -499,14 +501,7 @@
             <option>Professional Fees</option><option>Utilities</option><option>Transportation</option><option>Others</option>
           </select>
         </div>
-        <div class="tbl-wrap" style="border-top:none;border-radius:0 0 var(--r-lg) var(--r-lg);">
-          <table>
-            <thead><tr>
-              <th>Date</th><th>SI/OR #</th><th>Payee</th><th>Category</th><th>Project</th><th>Amount</th><th>Payment</th><th>Status</th><th></th>
-            </tr></thead>
-            <tbody id="exp-tbody"></tbody>
-          </table>
-        </div>
+        <div id="exp-list"></div>
       </div>
       <div id="exp-page-report" style="display:none;"></div>
     </div>
@@ -550,12 +545,12 @@
     <div class="page" id="page-req-dashboard">
       <div class="sec-hdr">
         <div class="sec-title">My Purchase Orders</div>
-        <button class="btn btn-mg btn-sm" onclick="navigate('req-new-po')">+ Create P.O.</button>
+        <button class="btn btn-mg btn-sm" onclick="navigate('po-new-po')">+ Create P.O.</button>
       </div>
       <div class="panel-wrap">
         <div class="panel-inner">
           <div class="panel-side">
-            <button class="side-submit-btn" onclick="navigate('req-new-po')">CREATE P.O.</button>
+            <button class="side-submit-btn" onclick="navigate('po-new-po')">CREATE P.O.</button>
             <div class="side-info">Create purchase orders for vendors. POs are reviewed and approved by the Accountant.</div>
           </div>
           <div class="panel-content">
@@ -565,8 +560,21 @@
       </div>
     </div>
 
+    <!-- INVENTORY MATERIAL ORDERS -->
+    <div class="page" id="page-inv-orders">
+      <div class="sec-hdr">
+        <div class="sec-title">Material Orders — Warehouse Review</div>
+        <span class="badge badge-pending-inventory" id="inv-orders-page-cnt">0</span>
+      </div>
+      <div style="font-size:12.5px;color:var(--soft);margin:-8px 0 16px;line-height:1.6;">Engineer orders land here first. Release available stock from the warehouse, then shortages are forwarded to the PO Officer.</div>
+      <div class="tbl-wrap">
+        <div id="inv-orders-list"></div>
+      </div>
+    </div>
+
     <!-- INVENTORY DASHBOARD -->
     <div class="page" id="page-inv-dashboard">
+      <div id="inv-orders-dash"></div>
       <div class="stat-row" id="inv-stat-row">
         <div class="stat-card"><div class="stat-lbl">Total Items</div><div class="stat-val" id="is-total">–</div></div>
         <div class="stat-card gn"><div class="stat-lbl">In Stock</div><div class="stat-val" id="is-ok">–</div></div>
@@ -705,6 +713,62 @@
       </div>
     </div>
 
+    <!-- RELEASE MONITORING -->
+    <div class="page" id="page-inv-release">
+      <div class="sec-hdr">
+        <div class="sec-title">Release Monitoring</div>
+        <button class="btn btn-mg btn-sm" onclick="openAddReleaseMonitor(false)">+ Add Project</button>
+      </div>
+      <div style="font-size:12.5px;color:var(--soft);margin:-8px 0 16px;line-height:1.6;">Track reserved materials per project. Update status as items are delivered to site. Removing items returns stock to available inventory.</div>
+      <div class="tbl-wrap">
+        <div class="search-row" style="border-radius:var(--r-lg) var(--r-lg) 0 0;">
+          <input class="search-inp" type="text" id="rel-search" placeholder="Search project, order ref, PM..." oninput="renderReleaseMonitor()">
+          <select class="filter-sel" id="rel-filter" onchange="renderReleaseMonitor()">
+            <option value="all">All Status</option>
+            <option value="ongoing">Ongoing (Reserved)</option>
+            <option value="partial">Partial Release</option>
+            <option value="completed">Released All</option>
+          </select>
+        </div>
+        <div id="rel-monitor-list"></div>
+        <div id="rel-monitor-detail" style="display:none;border-top:2px solid var(--bd);"></div>
+      </div>
+    </div>
+
+    <!-- PULL-OUT MONITORING -->
+    <div class="page" id="page-inv-pullout">
+      <div class="sec-hdr">
+        <div class="sec-title">Pull-Out & Return Monitoring</div>
+        <button class="btn btn-mg btn-sm" onclick="openPulloutModal()">+ Record Pull-Out</button>
+      </div>
+      <div style="font-size:12.5px;color:var(--soft);margin:-8px 0 16px;line-height:1.6;">Track tools and equipment pulled from released stock. Mark returns to maintain accountability.</div>
+      <div class="tbl-wrap">
+        <div class="search-row" style="border-radius:var(--r-lg) var(--r-lg) 0 0;">
+          <input class="search-inp" type="text" id="pull-search" placeholder="Search item, project, person..." oninput="renderPulloutMonitor()">
+          <select class="filter-sel" id="pull-filter" onchange="renderPulloutMonitor()">
+            <option value="all">All</option>
+            <option value="out">Unreturned</option>
+            <option value="returned">Returned</option>
+          </select>
+        </div>
+        <div style="overflow-x:auto;">
+          <table style="min-width:700px;width:100%;border-collapse:collapse;">
+            <thead><tr>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Date</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Project</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Item</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Qty</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Pulled By</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Return Status</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);padding:10px 14px;"></th>
+            </tr></thead>
+            <tbody id="pullout-tbody"></tbody>
+          </table>
+        </div>
+        <div style="padding:10px 16px;font-size:11.5px;color:var(--faint);" id="pullout-count"></div>
+      </div>
+    </div>
+
     <!-- MOVEMENT LOG -->
     <div class="page" id="page-inv-log">
       <div class="tbl-wrap">
@@ -715,6 +779,8 @@
             <option value="in">Stock In</option>
             <option value="out">Stock Out</option>
             <option value="ticket">Ticket Deduction</option>
+            <option value="reserve">Reservation</option>
+            <option value="release">Site Release</option>
             <option value="adjust">Adjustment</option>
           </select>
           <select class="filter-sel" id="log-project-filter" onchange="renderLog()">
@@ -1114,6 +1180,55 @@
     <div class="mo-foot">
       <button class="btn btn-ol" onclick="closeMo('mo-billing-gate')">Close</button>
       <button class="btn btn-or" onclick="billingGateNotifyOverride()">Notify for Override</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Release Monitor -->
+<div class="mo" id="mo-add-release">
+  <div class="mo-box mo-box-lg">
+    <div class="mo-head"><div class="mo-title">Add Project to Monitor</div><button class="mo-x" onclick="closeMo('mo-add-release')">✕</button></div>
+    <div class="mo-body">
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Project *</div>
+          <select class="fc" id="rel-add-project" onchange="relAddProjectChanged()"></select>
+        </div>
+        <div class="fl"><div class="form-lbl">PM</div><input class="fc" id="rel-add-pm" placeholder="Project manager"></div>
+      </div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Site Location</div><input class="fc" id="rel-add-site" placeholder="e.g. 3F East wing"></div>
+        <div class="fl"><div class="form-lbl">Order Ref (optional)</div><input class="fc" id="rel-add-order" placeholder="ORD-2026-xxx"></div>
+      </div>
+      <div class="fl"><div class="form-lbl">Remarks</div><input class="fc" id="rel-add-remarks" placeholder="Optional notes"></div>
+      <div class="sec-lbl" style="margin:18px 0 10px;">Items to Monitor</div>
+      <div id="rel-add-items"></div>
+      <button type="button" class="btn btn-ol btn-sm" onclick="relAddItemRow()">+ Add Item</button>
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-ol" onclick="closeMo('mo-add-release')">Cancel</button>
+      <button class="btn btn-mg" onclick="saveReleaseMonitor()">Save Project</button>
+    </div>
+  </div>
+</div>
+
+<!-- Pull-Out Modal -->
+<div class="mo" id="mo-pullout">
+  <div class="mo-box">
+    <div class="mo-head"><div class="mo-title">Record Pull-Out</div><button class="mo-x" onclick="closeMo('mo-pullout')">✕</button></div>
+    <div class="mo-body">
+      <div class="fl"><div class="form-lbl">Released Item Reference *</div>
+        <select class="fc" id="pull-ref-item"></select>
+      </div>
+      <div class="fr2">
+        <div class="fl"><div class="form-lbl">Quantity *</div><input class="fc" id="pull-qty" type="number" min="1" value="1"></div>
+        <div class="fl"><div class="form-lbl">Pull-Out Date</div><input class="fc" id="pull-date" type="date"></div>
+      </div>
+      <div class="fl"><div class="form-lbl">Pulled By *</div><input class="fc" id="pull-by" placeholder="Name / team"></div>
+      <div class="fl"><div class="form-lbl">Remarks</div><input class="fc" id="pull-remarks" placeholder="Purpose, location on site..."></div>
+    </div>
+    <div class="mo-foot">
+      <button class="btn btn-ol" onclick="closeMo('mo-pullout')">Cancel</button>
+      <button class="btn btn-mg" onclick="savePullout()">Record Pull-Out</button>
     </div>
   </div>
 </div>

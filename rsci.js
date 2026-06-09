@@ -53,7 +53,7 @@ function dueDateStatus(dueDateStr) {
 
 // ── LOCAL STORAGE & DEMO SEED ─────────────────────────────────
 const DB_KEY = 'rsci_db_v3';
-const SEED_VERSION = 4;
+const SEED_VERSION = 5;
 const SEED_VERSION_KEY = 'rsci_seed_version';
 const DEMO_PASSWORD = 'demo2025';
 
@@ -65,6 +65,9 @@ function applySeedDB() {
   Object.assign(DB, fresh);
   DB.po_release_queue = DB.po_release_queue || [];
   DB.notifications = DB.notifications || [];
+  DB.release_monitors = DB.release_monitors || [];
+  DB.release_items = DB.release_items || [];
+  DB.pullout_records = DB.pullout_records || [];
   migrateDB();
   saveDB();
   try { localStorage.setItem(SEED_VERSION_KEY, String(SEED_VERSION)); } catch(e) {}
@@ -135,16 +138,141 @@ function migrateDB() {
   (DB.tickets||[]).forEach(t=>{
     if(t.bossApproved===undefined) t.bossApproved=false;
     if(t.financeApproved===undefined) t.financeApproved=false;
-    if(!t.auditTrail) t.auditTrail=[{action:'Created',by:t.submittedBy||'System',at:t.submittedAt||nowISO(),note:'Ticket created.'}];
+    if(!t.auditTrail) t.auditTrail=[{action:'Created',by:t.submittedBy||'System',at:t.submittedAt||nowISO(),note:'Material order created.'}];
     if(!t.projectId&&t.project) {
       const p=DB.projects.find(x=>x.name===t.project);
       if(p) t.projectId=p.id;
     }
+    if(t.status==='Pending') t.status='Pending Inventory';
+    if((t.status==='Partial'||t.materials?.some(m=>(m.fulfilledQty||0)>0))&&!t.inventoryReviewedAt) {
+      t.inventoryReviewedAt=t.inventoryReviewedAt||t.submittedAt;
+      t.inventoryReviewedBy=t.inventoryReviewedBy||'Inventory';
+      if(ticketNeedsPurchase(t)) t.status='At PO';
+    }
+    if(t.status==='Partial'&&t.inventoryReviewedAt&&ticketNeedsPurchase(t)) t.status='At PO';
   });
+  (DB.inventory||[]).forEach(i=>{ if(i.reserved===undefined) i.reserved=0; });
+  DB.release_monitors=DB.release_monitors||[];
+  DB.release_items=DB.release_items||[];
+  DB.pullout_records=DB.pullout_records||[];
 }
 
 function statusBadgeClass(status) {
   return String(status||'').toLowerCase().replace(/\s+/g,'-');
+}
+
+function generateOrderNumber() {
+  const year=new Date().getFullYear();
+  const nums=DB.tickets.map(t=>{
+    const m=(t.no||'').match(/(?:ORD|TKT)-\d{4}-(\d+)/i);
+    return m?parseInt(m[1],10):0;
+  });
+  const next=(nums.length?Math.max(...nums):0)+1;
+  return `ORD-${year}-${String(next).padStart(3,'0')}`;
+}
+
+function getReservedQty(inv) { return inv?.reserved||0; }
+function getAvailableQty(inv) { return Math.max(0,(inv?.qty||0)-getReservedQty(inv)); }
+function getStockAvailableForMaterial(name) {
+  const inv=findInventoryItem(name);
+  return inv?getAvailableQty(inv):0;
+}
+function computeReleaseItemStatus(item) {
+  const rq=item.reservedQty||0, rel=item.releasedQty||0;
+  if(rel<=0) return 'Reserved';
+  if(rel>=rq) return 'Released All';
+  return 'Partially Released';
+}
+function releaseItemBadgeClass(st) {
+  return String(st||'').toLowerCase().replace(/\s+/g,'-');
+}
+function computeMonitorStatus(monitorId) {
+  const items=getReleaseItemsForMonitor(monitorId);
+  if(!items.length) return 'ongoing';
+  if(items.every(i=>i.status==='Released All')) return 'completed';
+  if(items.some(i=>i.status==='Partially Released'||i.status==='Released All')) return 'partial';
+  return 'ongoing';
+}
+function getReleaseItemsForMonitor(monitorId) {
+  return (DB.release_items||[]).filter(i=>i.monitorId===monitorId);
+}
+function findReleaseItemForTicketMaterial(ticketId, itemName) {
+  return (DB.release_items||[]).find(i=>i.ticketId===ticketId&&i.itemName===itemName);
+}
+function findOrCreateReleaseMonitor({projectId,projectName,ticketId,ticketNo,pm,siteLocation,remarks}) {
+  DB.release_monitors=DB.release_monitors||[];
+  let mon=ticketId?DB.release_monitors.find(m=>m.ticketId===ticketId):null;
+  if(!mon) mon=DB.release_monitors.find(m=>m.projectId===projectId&&m.status!=='completed'&&!m.ticketId);
+  if(!mon) {
+    mon={id:uid(),projectId,projectName,ticketId:ticketId||null,orderRef:ticketNo||null,pm:pm||'',siteLocation:siteLocation||'',remarks:remarks||'',status:'ongoing',createdAt:nowISO(),createdBy:_currentUser?.name||'System'};
+    DB.release_monitors.unshift(mon);
+  } else if(ticketId&&!mon.ticketId) { mon.ticketId=ticketId; mon.orderRef=ticketNo; }
+  return mon;
+}
+function reserveMaterialsForTicket(ticket) {
+  DB.release_items=DB.release_items||[];
+  const mon=findOrCreateReleaseMonitor({projectId:ticket.projectId,projectName:ticket.project,ticketId:ticket.id,ticketNo:ticket.no,pm:ticket.pm,siteLocation:ticket.siteLocation,remarks:ticket.remarks});
+  ticket.materials.forEach(m=>{
+    const inv=findInventoryItem(m.name);
+    const avail=inv?getAvailableQty(inv):0;
+    const reserveQty=Math.min(m.requestedQty||0,avail);
+    m.reservedQty=reserveQty;
+    if(inv&&reserveQty>0) {
+      inv.reserved=(inv.reserved||0)+reserveQty;
+      DB.inventory_log.unshift({id:uid(),dt:nowISO(),type:'reserve',itemName:inv.name,project:ticket.project,qtyChange:-reserveQty,balanceAfter:getAvailableQty(inv),remarks:`${ticket.no} reserved · ${ticket.project} (${reserveQty} ${m.unit})`});
+    }
+    DB.release_items.push({id:uid(),monitorId:mon.id,ticketId:ticket.id,itemName:m.name,inventoryId:inv?.id||null,reservedQty:reserveQty,releasedQty:0,unit:m.unit,status:'Reserved',createdAt:nowISO()});
+  });
+  mon.status=computeMonitorStatus(mon.id);
+}
+function restoreReleaseItemReservation(item,projectName) {
+  const inv=findInventoryItem(item.itemName);
+  const unreserve=Math.max(0,(item.reservedQty||0)-(item.releasedQty||0));
+  if(inv&&unreserve>0) {
+    inv.reserved=Math.max(0,(inv.reserved||0)-unreserve);
+    DB.inventory_log.unshift({id:uid(),dt:nowISO(),type:'reserve',itemName:inv.name,project:projectName||'',qtyChange:unreserve,balanceAfter:getAvailableQty(inv),remarks:`Reservation cancelled — ${unreserve} ${item.unit} returned to available`});
+  }
+}
+function syncWarehouseReleaseToMonitor(ticket,materialName,releaseQty) {
+  const ri=findReleaseItemForTicketMaterial(ticket.id,materialName);
+  if(!ri) return;
+  ri.releasedQty=(ri.releasedQty||0)+releaseQty;
+  ri.status=computeReleaseItemStatus(ri);
+  const inv=findInventoryItem(materialName);
+  if(inv&&releaseQty>0) inv.reserved=Math.max(0,(inv.reserved||0)-releaseQty);
+  const mon=DB.release_monitors?.find(m=>m.id===ri.monitorId);
+  if(mon) mon.status=computeMonitorStatus(mon.id);
+}
+function finalizeReleaseToMovementLog(ticket) {
+  const items=getReleaseItemsForMonitor(DB.release_monitors?.find(m=>m.ticketId===ticket.id)?.id||'').filter(i=>i.status==='Released All');
+  items.forEach(i=>{
+    DB.inventory_log.unshift({id:uid(),dt:nowISO(),type:'release',itemName:i.itemName,project:ticket.project,qtyChange:-(i.releasedQty||0),balanceAfter:findInventoryItem(i.itemName)?.qty??0,remarks:`${ticket.no} finalized · ${i.releasedQty} ${i.unit} released to site`});
+  });
+}
+
+function ticketNeedsPurchase(t) {
+  return (t.materials||[]).some(m=>(m.remainingQty||0)>0);
+}
+
+function getTicketsPendingInventory() {
+  return DB.tickets.filter(t=>t.status==='Pending Inventory');
+}
+
+function getTicketsForPOOfficer() {
+  return DB.tickets.filter(t=>{
+    if(t.status==='Completed'||t.linkedPOId) return false;
+    if(!t.inventoryReviewedAt||!ticketNeedsPurchase(t)) return false;
+    return t.status==='At PO'||t.status==='Partial'||t.status==='Pending Override';
+  });
+}
+
+function updateOrderNavBadges() {
+  const invCnt=getTicketsPendingInventory().length;
+  const poCnt=getTicketsForPOOfficer().length;
+  const nbInv=document.getElementById('nb-inv-orders');
+  const nbPo=document.getElementById('nb-po-orders');
+  if(nbInv) nbInv.textContent=invCnt||'';
+  if(nbPo) nbPo.textContent=poCnt||'';
 }
 
 function getAssignedProjectIds(userKey) {
@@ -162,6 +290,12 @@ function mergeUserAssignments(userKey, user) {
 function appendTicketAudit(ticket, action, note, by) {
   if(!ticket.auditTrail) ticket.auditTrail=[];
   ticket.auditTrail.push({action,by:by||_currentUser?.name||'System',at:nowISO(),note:note||''});
+}
+
+function pushPOAudit(po, action, note) {
+  if(!po) return;
+  if(!po.audit_trail) po.audit_trail=[];
+  po.audit_trail.push({action, by:_currentUser?.name||'–', at:nowISO(), note:note||''});
 }
 
 function reconcileBillingRecordProject(record) {
@@ -282,7 +416,7 @@ function logSystemActivity(action, entity, details) {
 function onBillingPaymentRecorded(projectId, invoiceLabel) {
   if(!projectId) return;
   const proj=DB.projects.find(p=>p.id===projectId);
-  const affected=DB.tickets.filter(t=>t.projectId===projectId&&(t.status==='Pending Override'||t.status==='Pending'));
+  const affected=DB.tickets.filter(t=>t.projectId===projectId&&['Pending Override','At PO','Pending Inventory'].includes(t.status));
   affected.forEach(t=>{
     appendTicketAudit(t,'Billing updated',`Paid invoice recorded (${invoiceLabel||'payment'}) — PO gate may pass`);
     if(t.status==='Pending Override'&&!t.bossApproved&&!t.financeApproved) t.status='Pending';
@@ -464,7 +598,7 @@ function cloneInitialDB() {
   ],
 
   inventory: [
-    {id:'INV001',name:'ELECTRICAL:EMT STRAIGHT_CONNECTOR 1/2',price:15,qty:342,unit:'PCS',min:50,brand:'Conduit Pro',expected:0},
+    {id:'INV001',name:'ELECTRICAL:EMT STRAIGHT_CONNECTOR 1/2',price:15,qty:342,reserved:0,unit:'PCS',min:50,brand:'Conduit Pro',expected:0},
     {id:'INV002',name:'ELECTRICAL:EMT STRAIGHT_CONNECTOR 3/4',price:23,qty:181,unit:'PCS',min:50,brand:'Conduit Pro',expected:0},
     {id:'INV003',name:'ELECTRICAL:GT_CONDUIT_HANGER 1/2',price:25,qty:399,unit:'PCS',min:80,brand:'Generic',expected:0},
     {id:'INV004',name:'ELECTRICAL:GT_CONDUIT_HANGER 3/4',price:30,qty:215,unit:'PCS',min:80,brand:'Generic',expected:0},
@@ -478,10 +612,10 @@ function cloneInitialDB() {
     {id:'INV012',name:'MECHANICAL:DUCT_TAPE',price:450,qty:13,unit:'PCS',min:5,brand:'Generic',expected:0},
     {id:'INV013',name:'MECHANICAL:FREON_T32_BIG_BLUE',price:5200,qty:0,unit:'PCS',min:1,brand:'Freon PH',expected:0},
     {id:'INV014',name:'PLUMBING:PVC B Coupling 25mm',price:20,qty:7,unit:'PCS',min:20,brand:'Neltex',expected:0},
-    {id:'INV015',name:'PLUMBING:PVC ELBOW 90deg 50mm',price:35,qty:45,unit:'PCS',min:15,brand:'Neltex',expected:0},
-    {id:'INV016',name:'PLUMBING:PVC PIPE 2 INCH',price:280,qty:22,unit:'LEN',min:10,brand:'Neltex',expected:0},
+    {id:'INV015',name:'PLUMBING:PVC ELBOW 90deg 50mm',price:35,qty:45,reserved:24,unit:'PCS',min:15,brand:'Neltex',expected:0},
+    {id:'INV016',name:'PLUMBING:PVC PIPE 2 INCH',price:280,qty:22,reserved:17,unit:'LEN',min:10,brand:'Neltex',expected:0},
     {id:'INV017',name:'PLUMBING:GATE VALVE 3/4',price:450,qty:0,unit:'PCS',min:5,brand:'Brass Co.',expected:0},
-    {id:'INV018',name:'CIVIL:CEMENT TYPE I 40KG',price:285,qty:120,unit:'BAGS',min:30,brand:'Holcim',expected:0},
+    {id:'INV018',name:'CIVIL:CEMENT TYPE I 40KG',price:285,qty:120,reserved:20,unit:'BAGS',min:30,brand:'Holcim',expected:0},
     {id:'INV019',name:'CIVIL:REINFORCING BAR 12MM DEFORMED',price:380,qty:85,unit:'LEN',min:20,brand:'Pag-asa Steel',expected:0},
     {id:'INV020',name:'CIVIL:REINFORCING BAR 16MM DEFORMED',price:680,qty:40,unit:'LEN',min:15,brand:'Pag-asa Steel',expected:0},
     {id:'INV021',name:'CIVIL:CHB 6 INCH',price:22,qty:450,unit:'PCS',min:100,brand:'Local',expected:0},
@@ -503,18 +637,18 @@ function cloneInitialDB() {
     engineer:{assignedProjectIds:['PROJ001','PROJ002']},
   },
   tickets: [
-    {id:'TKT001',no:'TKT-2026-001',pm:'Marco Rivera',project:'Maxicare Pulilan — 3F Renovation',projectId:'PROJ001',urgent:false,dateNeeded:ahead(12),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(8,8,30),status:'Partial',remarks:'3F hallway electrical — partial issue from warehouse',bossApproved:false,financeApproved:false,siteLocation:'3F East wing corridor',auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(8,8,30),note:'Ticket created.'}],
+    {id:'TKT001',no:'ORD-2026-001',pm:'Marco Rivera',project:'Maxicare Pulilan — 3F Renovation',projectId:'PROJ001',urgent:false,dateNeeded:ahead(12),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(8,8,30),status:'At PO',inventoryReviewedAt:ts(8,9,0),inventoryReviewedBy:'Danny Pascual',sentToPOAt:ts(8,9,5),remarks:'3F hallway electrical — partial issue from warehouse',bossApproved:false,financeApproved:false,siteLocation:'3F East wing corridor',auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(8,8,30),note:'Material order submitted.'},{action:'Warehouse release',by:'Danny Pascual',at:ts(8,9,0),note:'Released available stock; 20 EMT connectors still need purchase.'},{action:'Sent to PO',by:'Danny Pascual',at:ts(8,9,5),note:'Shortages forwarded to PO Officer.'}],
       materials:[{name:'ELECTRICAL:EMT STRAIGHT_CONNECTOR 1/2',requestedQty:40,unit:'PCS',fulfilledQty:20,remainingQty:20,brand:'Conduit Pro'},{name:'ELECTRICAL:METAL_UTILITY_BOX',requestedQty:10,unit:'PCS',fulfilledQty:10,remainingQty:0,brand:'Greenfield'}]},
-    {id:'TKT002',no:'TKT-2026-002',pm:'Ramon dela Cruz',project:'Phase 2 Foundation',projectId:'PROJ004',urgent:true,dateNeeded:ahead(5),submittedBy:'Ramon dela Cruz',submittedAt:ts(3,10,15),status:'Pending',remarks:'Urgent — rainy season; need cement before weekend',bossApproved:false,financeApproved:false,siteLocation:'Basement footing Grid B',auditTrail:[{action:'Created',by:'Ramon dela Cruz',at:ts(3,10,15),note:'Ticket created.'}],
+    {id:'TKT002',no:'ORD-2026-002',pm:'Ramon dela Cruz',project:'Phase 2 Foundation',projectId:'PROJ004',urgent:true,dateNeeded:ahead(5),submittedBy:'Ramon dela Cruz',submittedAt:ts(3,10,15),status:'Pending Inventory',remarks:'Urgent — rainy season; need cement before weekend',bossApproved:false,financeApproved:false,siteLocation:'Basement footing Grid B',auditTrail:[{action:'Created',by:'Ramon dela Cruz',at:ts(3,10,15),note:'Material order submitted — awaiting inventory review.'}],
       materials:[{name:'CIVIL:CEMENT TYPE I 40KG',requestedQty:20,unit:'BAGS',fulfilledQty:0,remainingQty:20,brand:'Holcim'},{name:'PLUMBING:PVC PIPE 2 INCH',requestedQty:5,unit:'LEN',fulfilledQty:0,remainingQty:5,brand:'Neltex'}]},
-    {id:'TKT003',no:'TKT-2026-003',pm:'Jose Cruz',project:'GF Reception Area',projectId:'PROJ005',urgent:false,dateNeeded:ahead(20),submittedBy:'Jose Cruz',submittedAt:ts(14,14,0),status:'Completed',remarks:'Paint and plywood delivered',bossApproved:false,financeApproved:false,siteLocation:'GF lobby',auditTrail:[{action:'Created',by:'Jose Cruz',at:ts(14,14,0),note:'Ticket created.'}],
+    {id:'TKT003',no:'ORD-2026-003',pm:'Jose Cruz',project:'GF Reception Area',projectId:'PROJ005',urgent:false,dateNeeded:ahead(20),submittedBy:'Jose Cruz',submittedAt:ts(14,14,0),status:'Completed',inventoryReviewedAt:ts(14,15,0),inventoryReviewedBy:'Danny Pascual',remarks:'Paint and plywood delivered',bossApproved:false,financeApproved:false,siteLocation:'GF lobby',auditTrail:[{action:'Created',by:'Jose Cruz',at:ts(14,14,0),note:'Material order submitted.'},{action:'Warehouse release',by:'Danny Pascual',at:ts(14,15,0),note:'Fully released from warehouse — no purchase needed.'}],
       materials:[{name:'FINISHING:PAINT WHITE LATEX 4L',requestedQty:8,unit:'GAL',fulfilledQty:8,remainingQty:0,brand:'Davies'},{name:'CIVIL:PLYWOOD 3/4 MARINE',requestedQty:5,unit:'SHT',fulfilledQty:5,remainingQty:0,brand:'Generic'}]},
-    {id:'TKT004',no:'TKT-2026-004',pm:'Marco Rivera',project:'Maxicare Pulilan — 3F Renovation',projectId:'PROJ001',urgent:true,dateNeeded:ahead(7),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(2,9,0),status:'Pending Override',remarks:'THHN wire — no mobilization billed yet',bossApproved:false,financeApproved:false,siteLocation:'3F electrical room',
-      auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(2,9,0),note:'Ticket created.'},{action:'Entry gate blocked',by:'Liza Mercado',at:ts(2,9,15),note:'Billing gate blocked — no paid invoice for Maxicare Pulilan — 3F Renovation'}],
+    {id:'TKT004',no:'ORD-2026-004',pm:'Marco Rivera',project:'Maxicare Pulilan — 3F Renovation',projectId:'PROJ001',urgent:true,dateNeeded:ahead(7),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(2,9,0),status:'Pending Override',inventoryReviewedAt:ts(2,9,10),inventoryReviewedBy:'Danny Pascual',sentToPOAt:ts(2,9,12),remarks:'THHN wire — no mobilization billed yet',bossApproved:false,financeApproved:false,siteLocation:'3F electrical room',
+      auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(2,9,0),note:'Material order submitted.'},{action:'Warehouse release',by:'Danny Pascual',at:ts(2,9,10),note:'No stock on hand — all items need purchase.'},{action:'Sent to PO',by:'Danny Pascual',at:ts(2,9,12),note:'Forwarded to PO Officer.'},{action:'Entry gate blocked',by:'Liza Mercado',at:ts(2,9,15),note:'Billing gate blocked — no paid invoice for Maxicare Pulilan — 3F Renovation'}],
       materials:[{name:'ELECTRICAL:ROYAL CORD THHN 5.5mm2 - BLACK',requestedQty:10,unit:'PCS',fulfilledQty:0,remainingQty:10,brand:'Royal Cord'}]},
-    {id:'TKT005',no:'TKT-2026-005',pm:'Marco Rivera',project:'Smilee Monumento — Interior Fit-out',projectId:'PROJ002',urgent:false,dateNeeded:ahead(10),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(1,11,20),status:'Pending',remarks:'Dental operatory fit-out — PVC rough-in',bossApproved:false,financeApproved:false,siteLocation:'Ground floor, operatory wing',auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(1,11,20),note:'Ticket created.'}],
+    {id:'TKT005',no:'ORD-2026-005',pm:'Marco Rivera',project:'Smilee Monumento — Interior Fit-out',projectId:'PROJ002',urgent:false,dateNeeded:ahead(10),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(1,11,20),status:'Pending Inventory',remarks:'Dental operatory fit-out — PVC rough-in',bossApproved:false,financeApproved:false,siteLocation:'Ground floor, operatory wing',auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(1,11,20),note:'Material order submitted — awaiting inventory review.'}],
       materials:[{name:'PLUMBING:PVC PIPE 2 INCH',requestedQty:12,unit:'LEN',fulfilledQty:0,remainingQty:12,brand:'Neltex'},{name:'PLUMBING:PVC ELBOW 90deg 50mm',requestedQty:24,unit:'PCS',fulfilledQty:0,remainingQty:24,brand:'Neltex'}]},
-    {id:'TKT006',no:'TKT-2026-006',pm:'Marco Rivera',project:'Residential Complex Phase 1',projectId:'PROJ003',urgent:false,dateNeeded:ahead(14),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(4,8,45),status:'Pending Override',remarks:'Awaiting finance sign-off',bossApproved:true,financeApproved:false,siteLocation:'Tower A, 5F MEP',auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(4,8,45),note:'Ticket created.'},{action:'Entry gate blocked',by:'Liza Mercado',at:ts(4,9,0),note:'Billing gate blocked — no paid invoice for Residential Complex Phase 1'},{action:'Boss approved',by:'Ricardo Santos',at:ts(3,16,30),note:'Override approved by Ricardo Santos'}],
+    {id:'TKT006',no:'ORD-2026-006',pm:'Marco Rivera',project:'Residential Complex Phase 1',projectId:'PROJ003',urgent:false,dateNeeded:ahead(14),submittedBy:'Marco Rivera',submittedRole:'engineer',engineerName:'Marco Rivera',submittedAt:ts(4,8,45),status:'Pending Override',inventoryReviewedAt:ts(4,8,55),inventoryReviewedBy:'Danny Pascual',sentToPOAt:ts(4,9,0),remarks:'Awaiting finance sign-off',bossApproved:true,financeApproved:false,siteLocation:'Tower A, 5F MEP',auditTrail:[{action:'Created',by:'Marco Rivera',at:ts(4,8,45),note:'Material order submitted.'},{action:'Warehouse release',by:'Danny Pascual',at:ts(4,8,55),note:'No stock — forwarded entire order to PO.'},{action:'Entry gate blocked',by:'Liza Mercado',at:ts(4,9,0),note:'Billing gate blocked — no paid invoice for Residential Complex Phase 1'},{action:'Boss approved',by:'Ricardo Santos',at:ts(3,16,30),note:'Override approved by Ricardo Santos'}],
       materials:[{name:'ELECTRICAL:GT_CONDUIT_HANGER 3/4',requestedQty:80,unit:'PCS',fulfilledQty:0,remainingQty:80,brand:'Generic'}]},
   ],
   purchase_orders: [
@@ -576,15 +710,37 @@ function cloneInitialDB() {
   system_logs: [
     {id:'SL001',dt:ts(0,8,0),user:'Liza Mercado',action:'Billing gate',entity:'TKT-2026-004',details:'PO conversion blocked — Pending Override',status:'success'},
     {id:'SL002',dt:ts(3,16,30),user:'Ricardo Santos',action:'Override approved',entity:'TKT-2026-006',details:'Boss approval recorded',status:'success'},
-    {id:'SL003',dt:ts(1,14,0),user:'Benito Navarro',action:'PO approved',entity:'RS2025_0041',details:'Pending PO sent to vendor',status:'success'},
+    {id:'SL003',dt:ts(1,14,0),user:'Benito Navarro',action:'PO approved',entity:'RS2026_0041',details:'Pending PO sent to vendor',status:'success'},
   ],
   notifications: [
     {id:'N001',dt:ts(0,7,30),type:'orange',title:'Override needed',text:'TKT-2026-004 blocked at billing gate — Boss & Finance approval required.',roles:['boss','accountant','po_officer'],source:'billing-gate'},
+    {id:'N005',dt:ts(3,10,20),type:'blue',title:'New material order',text:'ORD-2026-002 from Ramon dela Cruz — Phase 2 Foundation. Review warehouse stock first.',roles:['inventory_manager','po_officer'],source:'material-order'},
+    {id:'N006',dt:ts(8,9,10),type:'orange',title:'Purchase needed',text:'ORD-2026-001 — shortages after warehouse release. Create PO for remaining items.',roles:['po_officer'],source:'material-order'},
     {id:'N002',dt:ts(1,11,25),type:'blue',title:'New engineer request',text:'Marco Rivera submitted TKT-2026-005 for Smilee Monumento.',roles:['po_officer','admin'],source:'ticket'},
     {id:'N003',dt:ts(3,16,35),type:'green',title:'Boss approved override',text:'TKT-2026-006 awaiting Finance approval.',roles:['accountant'],source:'override'},
     {id:'N004',dt:ts(0,6,0),type:'red',title:'Low stock alert',text:'3 inventory items at or below minimum.',roles:['inventory_manager','admin'],source:'inventory'},
   ],
   po_release_queue: [],
+  release_monitors: [
+    {id:'RM001',projectId:'PROJ001',projectName:'Maxicare Pulilan — 3F Renovation',ticketId:'TKT001',orderRef:'ORD-2026-001',pm:'Marco Rivera',siteLocation:'3F East wing corridor',remarks:'3F hallway electrical',status:'partial',createdAt:ts(8,8,30),createdBy:'Marco Rivera'},
+    {id:'RM002',projectId:'PROJ004',projectName:'Phase 2 Foundation',ticketId:'TKT002',orderRef:'ORD-2026-002',pm:'Ramon dela Cruz',siteLocation:'Basement footing Grid B',remarks:'Urgent cement order',status:'ongoing',createdAt:ts(3,10,15),createdBy:'Ramon dela Cruz'},
+    {id:'RM003',projectId:'PROJ002',projectName:'Smilee Monumento — Interior Fit-out',ticketId:'TKT005',orderRef:'ORD-2026-005',pm:'Marco Rivera',siteLocation:'Ground floor, operatory wing',remarks:'PVC rough-in',status:'ongoing',createdAt:ts(1,11,20),createdBy:'Marco Rivera'},
+    {id:'RM004',projectId:'PROJ003',projectName:'Residential Complex Phase 1',ticketId:null,orderRef:null,pm:'Marco Rivera',siteLocation:'Tower A equipment yard',remarks:'Tool tracking — scaffolding & jacks',status:'partial',createdAt:ts(10,9,0),createdBy:'Danny Pascual'},
+  ],
+  release_items: [
+    {id:'RI001',monitorId:'RM001',ticketId:'TKT001',itemName:'ELECTRICAL:EMT STRAIGHT_CONNECTOR 1/2',inventoryId:'INV001',reservedQty:40,releasedQty:20,unit:'PCS',status:'Partially Released',createdAt:ts(8,8,30)},
+    {id:'RI002',monitorId:'RM001',ticketId:'TKT001',itemName:'ELECTRICAL:METAL_UTILITY_BOX',inventoryId:'INV007',reservedQty:10,releasedQty:10,unit:'PCS',status:'Released All',createdAt:ts(8,8,30)},
+    {id:'RI003',monitorId:'RM002',ticketId:'TKT002',itemName:'CIVIL:CEMENT TYPE I 40KG',inventoryId:'INV018',reservedQty:20,releasedQty:0,unit:'BAGS',status:'Reserved',createdAt:ts(3,10,15)},
+    {id:'RI004',monitorId:'RM002',ticketId:'TKT002',itemName:'PLUMBING:PVC PIPE 2 INCH',inventoryId:'INV016',reservedQty:5,releasedQty:0,unit:'LEN',status:'Reserved',createdAt:ts(3,10,15)},
+    {id:'RI005',monitorId:'RM003',ticketId:'TKT005',itemName:'PLUMBING:PVC PIPE 2 INCH',inventoryId:'INV016',reservedQty:12,releasedQty:0,unit:'LEN',status:'Reserved',createdAt:ts(1,11,20)},
+    {id:'RI006',monitorId:'RM003',ticketId:'TKT005',itemName:'PLUMBING:PVC ELBOW 90deg 50mm',inventoryId:'INV015',reservedQty:24,releasedQty:0,unit:'PCS',status:'Reserved',createdAt:ts(1,11,20)},
+    {id:'RI007',monitorId:'RM004',ticketId:null,itemName:'CIVIL:SCAFFOLDING JACK BASE',inventoryId:'INV024',reservedQty:6,releasedQty:4,unit:'PCS',status:'Partially Released',createdAt:ts(10,9,0)},
+    {id:'RI008',monitorId:'RM004',ticketId:null,itemName:'CIVIL:WELDING ROD 6013',inventoryId:'INV022',reservedQty:2,releasedQty:2,unit:'BOX',status:'Released All',createdAt:ts(10,9,0)},
+  ],
+  pullout_records: [
+    {id:'PU001',releaseItemId:'RI007',monitorId:'RM004',itemName:'CIVIL:SCAFFOLDING JACK BASE',projectName:'Residential Complex Phase 1',qty:4,pulloutDate:ts(8,7,30),pulledBy:'Ramon dela Cruz',returned:false,returnDate:null,remarks:'Tower A exterior scaffold'},
+    {id:'PU002',releaseItemId:'RI008',monitorId:'RM004',itemName:'CIVIL:WELDING ROD 6013',projectName:'Residential Complex Phase 1',qty:2,pulloutDate:ts(9,8,0),pulledBy:'Site Welder Team',returned:true,returnDate:ts(5,16,0),remarks:'Structural tie-ins — returned unused'},
+  ],
   };
 }
 let DB = cloneInitialDB();
@@ -733,10 +889,10 @@ const NAV_DEFS = {
   ],
   po_officer: [
     {section:'Overview'},
-    {label:'Dashboard',      page:'po-dashboard',     icon:'<path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/>'},
+    {label:'Dashboard',      page:'po-dashboard',     icon:'<path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/>', badge:'po-orders'},
     {section:'Procurement'},
     {label:'My POs',         page:'req-dashboard',    icon:'<path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/>'},
-    {label:'Create P.O.',    page:'req-new-po',       icon:'<path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>'},
+    {label:'Create P.O.',    page:'po-new-po',        icon:'<path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>'},
     {section:'Master Data'},
     {label:'Suppliers',      page:'suppliers',        icon:'<path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/>'},
   ],
@@ -747,9 +903,12 @@ const NAV_DEFS = {
   ],
   inventory_manager: [
     {label:'Dashboard',      page:'inv-dashboard',    icon:'<path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/>'},
+    {label:'Material Orders',page:'inv-orders',       icon:'<path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/>', badge:'inv-orders'},
     {label:'All Inventory',  page:'inv-all',          icon:'<path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/>'},
     {label:'Stock In',       page:'inv-stock-in',     icon:'<path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>'},
     {label:'Stock Out',      page:'inv-stock-out',    icon:'<path d="M19 13H5v-2h14v2z"/>'},
+    {label:'Release Monitor',page:'inv-release',      icon:'<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/>'},
+    {label:'Pull-Out Monitor',page:'inv-pullout',     icon:'<path d="M19 3h-4.18C14.4 1.84 13.3 1 12 1c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm2 14H7v-2h7v2z"/>'},
     {label:'Movement Log',   page:'inv-log',          icon:'<path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/>'},
   ],
   boss: [
@@ -786,6 +945,8 @@ function setupApp() {
       <svg viewBox="0 0 24 24">${n.icon}</svg>${n.label}
       ${n.badge==='po-pend'?`<span class="nb-badge" id="nb-po-pend">${DB.purchase_orders.filter(p=>p.status==='Pending').length||''}</span>`:''}
       ${n.badge==='override-pend'?`<span class="nb-badge" id="nb-override-pend">${getPendingOverrideTickets().length||''}</span>`:''}
+      ${n.badge==='inv-orders'?`<span class="nb-badge" id="nb-inv-orders">${getTicketsPendingInventory().length||''}</span>`:''}
+      ${n.badge==='po-orders'?`<span class="nb-badge" id="nb-po-orders">${getTicketsForPOOfficer().length||''}</span>`:''}
     </button>`;
   }).join('');
 
@@ -799,6 +960,7 @@ function setupApp() {
     admin:'acc-dashboard',accountant:'acc-dashboard',po_officer:'po-dashboard',
     inventory_manager:'inv-dashboard', engineer:'emp-dashboard', boss:'boss-dashboard'
   };
+  updateOrderNavBadges();
   navigate(defaults[u.role] || 'po-dashboard', null);
 }
 
@@ -820,8 +982,8 @@ function navigate(page, btn) {
     'admin-logs':'System Activity Log','billing-list':'Customer Billing','billing-detail':'Billing Detail',
     'req-dashboard':'My Purchase Orders','req-new-po':'Create Purchase Order',
     'po-dashboard':'PO Officer Dashboard','po-new-po':'Create Purchase Order',
-    'inv-dashboard':'Inventory Dashboard','inv-all':'All Inventory',
-    'inv-stock-in':'Stock In','inv-stock-out':'Stock Out','inv-log':'Movement Log',
+    'inv-dashboard':'Inventory Dashboard','inv-orders':'Material Orders','inv-all':'All Inventory',
+    'inv-stock-in':'Stock In','inv-stock-out':'Stock Out','inv-release':'Release Monitoring','inv-pullout':'Pull-Out Monitoring','inv-log':'Movement Log',
     'projects':'Awarded Projects','suppliers':'Suppliers / Vendors','expenses-report':'Expenses by Project',
     'boss-dashboard':'Executive Dashboard','boss-override-queue':'Override Queue',
     'boss-projects':'Awarded Projects','boss-po-list':'Purchase Orders','boss-billing':'Billing Summary',
@@ -849,8 +1011,11 @@ function navigate(page, btn) {
   if(page==='po-dashboard')    renderPODashboard();
   if(page==='po-new-po')       initPOForm('po-officer-form-wrap');
   if(page==='inv-dashboard')   renderDashboard();
+  if(page==='inv-orders')      renderInvOrdersList();
   if(page==='inv-all')         renderInventoryTable();
   if(page==='inv-log')         renderLog();
+  if(page==='inv-release')     renderReleaseMonitor();
+  if(page==='inv-pullout')     renderPulloutMonitor();
   if(page==='inv-stock-in')    { document.getElementById('si-date').value=today(); if(isDemoSession()) prefillStockInDemo(); }
   if(page==='inv-stock-out')   { document.getElementById('so-date').value=today(); }
   if(page==='projects')        { projectsGoTab('list', document.querySelector('#projects-tab-nav .exp-sub-btn')); renderProjectsList(); }
@@ -950,7 +1115,7 @@ function updateInvPill() {
 function updateAccStats() {
   const lo = document.getElementById('acc-low-cnt');   if(lo) lo.textContent=DB.inventory.filter(i=>(i.qty||0)<=(i.min||5)).length;
   const po = document.getElementById('acc-po-cnt');    if(po) po.textContent=DB.purchase_orders.filter(p=>p.status==='Pending').length;
-  const tc = document.getElementById('acc-ticket-cnt');if(tc) tc.textContent=DB.tickets.filter(t=>t.status==='Pending').length;
+  const tc = document.getElementById('acc-ticket-cnt');if(tc) tc.textContent=DB.tickets.filter(t=>t.status==='Pending Inventory'||t.status==='At PO').length;
   const bv = document.getElementById('acc-billed-val');
   if(bv) {
     const tot=DB.billing_invoices.reduce((s,i)=>s+(parseFloat(i.baseAmount)||0),0);
@@ -971,7 +1136,7 @@ function renderAccDashboard() {
   const cols=document.getElementById('acc-dash-cols');
   if(!cols) return;
   const pendPOs  = DB.purchase_orders.filter(p=>p.status==='Pending');
-  const partTkts = DB.tickets.filter(t=>t.status==='Pending'||t.status==='Partial');
+  const partTkts = DB.tickets.filter(t=>t.status==='Pending Inventory'||t.status==='At PO'||t.status==='Partial');
   const lowStock = DB.inventory.filter(i=>(i.qty||0)<=(i.min||5)).slice(0,6);
   // Due date alerts for non-received POs
   const duePOs   = DB.purchase_orders.filter(p=>p.status!=='Received'&&p.status!=='Cancelled'&&p.dueDate&&dueDateStatus(p.dueDate)!=='ok').slice(0,5);
@@ -1031,42 +1196,181 @@ function renderEmpDashboard() {
     </div>`).join('');
 }
 
+function getOrderFlowLabel(t) {
+  if(t.status==='Completed') return 'Complete — all materials released and/or purchased.';
+  if(t.status==='Pending Inventory') return 'Step 1: Inventory Manager checks warehouse stock and releases what is available.';
+  if(t.status==='At PO'||(t.inventoryReviewedAt&&ticketNeedsPurchase(t))) return 'Step 2: PO Officer creates a purchase order for remaining shortages.';
+  if(t.inventoryReviewedAt&&!ticketNeedsPurchase(t)) return 'Released fully from warehouse — no purchase required.';
+  if(t.status==='Pending Override') return 'Billing override required before PO can proceed.';
+  return 'Material order in progress.';
+}
+
+function renderInvOrdersList() {
+  const el=document.getElementById('inv-orders-list');
+  if(!el) return;
+  const pending=getTicketsPendingInventory();
+  const cntEl=document.getElementById('inv-orders-page-cnt');
+  if(cntEl) cntEl.textContent=pending.length;
+  if(!pending.length) {
+    el.innerHTML='<div class="empty-state"><div class="empty-icon">📦</div>No orders awaiting warehouse review.<br><span style="font-size:11.5px;">New engineer requests appear here first.</span></div>';
+    return;
+  }
+  el.innerHTML=pending.map(t=>{
+    const materials=t.materials.map(m=>m.name.split(':').pop()).join(', ');
+    return `<div class="ticket-row" onclick="viewTicketDetail('${t.id}')">
+      <div><div class="ticket-no">${esc(t.no)} ${t.urgent?'<span class="badge badge-urgent" style="font-size:9px;">URGENT</span>':''}</div><div class="ticket-project">${esc(t.project)}</div></div>
+      <div style="flex:1;"><div class="ticket-mats">${esc(materials)}</div><div class="ticket-date">Engineer: ${esc(t.engineerName||t.submittedBy||'–')} · Needed ${fmtDate(t.dateNeeded)}</div></div>
+      <div><span class="badge badge-pending-inventory">Pending Inventory</span></div>
+      <div style="color:var(--mg);">→</div>
+    </div>`;
+  }).join('');
+}
+
+function renderInvOrdersDashWidget() {
+  const el=document.getElementById('inv-orders-dash');
+  if(!el) return;
+  const pending=getTicketsPendingInventory();
+  if(!pending.length) {
+    el.innerHTML='';
+    return;
+  }
+  el.innerHTML=`<div class="dash-widget" style="margin-bottom:0;">
+    <div class="dash-widget-head">
+      <div class="dash-widget-title" style="color:var(--bl);">📋 Material Orders — Warehouse Review</div>
+      <span class="badge badge-pending-inventory">${pending.length}</span>
+      <button class="btn btn-ol btn-sm" style="margin-left:auto;" onclick="navigate('inv-orders',document.querySelector('[data-page=inv-orders]'))">View all</button>
+    </div>
+    <div class="dash-widget-body no-pad">
+      ${pending.slice(0,5).map(t=>`<div class="ticket-row" onclick="viewTicketDetail('${t.id}')" style="cursor:pointer;">
+        <div><div class="ticket-no">${esc(t.no)}</div><div class="ticket-project">${esc(t.project)}</div></div>
+        <div style="flex:1;font-size:11px;color:var(--soft);">${esc(t.engineerName||t.submittedBy||'–')} · ${t.materials.length} item(s)</div>
+        <div style="color:var(--mg);">Review →</div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function processInventoryRelease(ticketId) {
+  const t=DB.tickets.find(x=>x.id===ticketId);
+  if(!t||t.status!=='Pending Inventory') { toast('Error: This order is not awaiting inventory review.'); return; }
+  const reviewer=_currentUser?.name||'Inventory Manager';
+  let totalReleased=0;
+  const shortageItems=[];
+  t.materials.forEach((m,idx)=>{
+    const pendingQty=Math.max(0,(m.requestedQty||0)-(m.fulfilledQty||0));
+    const available=getStockAvailableForMaterial(m.name);
+    const inputEl=document.getElementById(`inv-rel-${ticketId}-${idx}`);
+    let releaseQty=inputEl?parseInt(inputEl.value,10):Math.min(pendingQty,available);
+    if(isNaN(releaseQty)||releaseQty<0) releaseQty=0;
+    releaseQty=Math.min(releaseQty,pendingQty,available);
+    const inv=findInventoryItem(m.name);
+    if(inv&&releaseQty>0) {
+      inv.qty=Math.max(0,(inv.qty||0)-releaseQty);
+      syncWarehouseReleaseToMonitor(t,m.name,releaseQty);
+      DB.inventory_log.unshift({id:uid(),dt:nowISO(),type:'release',itemName:inv.name,project:t.project||'',qtyChange:-releaseQty,balanceAfter:inv.qty,remarks:`${t.no} warehouse release · ${t.project}${t.siteLocation?` · ${t.siteLocation}`:''}`});
+      totalReleased+=releaseQty;
+    }
+    m.fulfilledQty=(m.fulfilledQty||0)+releaseQty;
+    m.remainingQty=Math.max(0,(m.requestedQty||0)-m.fulfilledQty);
+    if(m.remainingQty>0) shortageItems.push(`${m.name.split(':').pop()} (${m.remainingQty} ${m.unit})`);
+  });
+  t.inventoryReviewedAt=nowISO();
+  t.inventoryReviewedBy=reviewer;
+  if(!ticketNeedsPurchase(t)) {
+    t.status='Completed';
+    finalizeReleaseToMovementLog(t);
+    appendTicketAudit(t,'Warehouse release',`Fully released from stock (${totalReleased} unit(s) total).`,reviewer);
+    toast(`Order ${t.no} completed from warehouse.`,'ok');
+  } else {
+    t.status='At PO';
+    t.sentToPOAt=nowISO();
+    appendTicketAudit(t,'Warehouse release',`Released ${totalReleased} unit(s) from stock.`,reviewer);
+    appendTicketAudit(t,'Sent to PO',`Shortages forwarded to PO Officer: ${shortageItems.join('; ')}`,reviewer);
+    pushNotification({type:'orange',title:'Purchase needed',text:`${t.no} · ${t.project} — create PO for items still needed after warehouse release.`,roles:['po_officer'],source:'material-order'});
+    toast('Warehouse release recorded. Shortages sent to PO Officer.','ok');
+  }
+  logSystemActivity('Inventory review completed',t.no,ticketNeedsPurchase(t)?'Shortages sent to PO':'Fully released from warehouse');
+  saveDB();
+  updateInvPill();
+  updateOrderNavBadges();
+  if(currentPage==='inv-orders') renderInvOrdersList();
+  if(currentPage==='inv-dashboard') renderDashboard();
+  if(currentPage==='po-dashboard') renderPODashboard();
+  viewTicketDetail(ticketId);
+}
+
 function viewTicketDetail(id) {
   const t=DB.tickets.find(x=>x.id===id);
   if(!t) return;
   const el=document.getElementById('emp-detail-content');
-  const pct=t.materials.length?Math.round(t.materials.reduce((s,m)=>s+(m.fulfilledQty/m.requestedQty),0)/t.materials.length*100):0;
-  const isDone=pct===100;
-  const canConvert=['admin','accountant','po_officer'].includes(_currentUser?.role||'');
-  const convertBtn=canConvert&&t.status!=='Completed'&&!t.linkedPOId
-    ? `<div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-bl" onclick="convertTicketToPO('${id}')" style="width:100%;justify-content:center;">📋 Create PO from Ticket</button></div>`
-    : '';
+  const role=_currentUser?.role||'';
+  const pct=t.materials.length?Math.round(t.materials.reduce((s,m)=>s+((m.fulfilledQty||0)/(m.requestedQty||1)),0)/t.materials.length*100):0;
+  const canInvReview=role==='inventory_manager'&&t.status==='Pending Inventory';
+  const canPO=['admin','accountant','po_officer'].includes(role);
+  const poReady=t.inventoryReviewedAt&&ticketNeedsPurchase(t)&&t.status!=='Completed'&&!t.linkedPOId;
+  const showBilling=canPO&&t.inventoryReviewedAt&&poReady;
+  const invReviewTable=canInvReview?`<div style="background:var(--mg-lt);border:1px solid var(--mg);border-radius:var(--r);padding:14px 16px;margin-bottom:16px;">
+    <div style="font-weight:700;font-size:13px;color:var(--mg);margin-bottom:8px;">Warehouse release</div>
+    <div style="font-size:12px;color:var(--soft);margin-bottom:12px;line-height:1.55;">Release available stock first. Any remaining quantity will be forwarded to the PO Officer to purchase.</div>
+    <div class="tbl-wrap" style="box-shadow:none;border:none;"><table>
+      <thead><tr><th>Material</th><th>Requested</th><th>In stock</th><th>Release qty</th></tr></thead>
+      <tbody>${t.materials.map((m,idx)=>{
+        const pending=Math.max(0,(m.requestedQty||0)-(m.fulfilledQty||0));
+        const avail=getStockAvailableForMaterial(m.name);
+        const def=Math.min(pending,avail);
+        return `<tr>
+          <td style="font-weight:600;">${esc(m.name.split(':').pop())}</td>
+          <td style="text-align:center;">${pending} ${esc(m.unit)}</td>
+          <td style="text-align:center;font-weight:700;color:${avail>0?'var(--gn)':'var(--rd)'};">${avail}</td>
+          <td style="text-align:center;"><input class="fc" type="number" id="inv-rel-${id}-${idx}" min="0" max="${Math.min(pending,avail)}" value="${def}" style="width:80px;margin:0 auto;text-align:center;padding:6px 8px;"></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+    <button class="btn btn-gn btn-lg" onclick="processInventoryRelease('${id}')" style="width:100%;justify-content:center;margin-top:14px;">✓ Confirm warehouse release</button>
+  </div>`:'';
+  const convertBtn=canPO&&poReady
+    ?`<div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-mg" onclick="convertTicketToPO('${id}')" style="width:100%;justify-content:center;">📋 Create PO for shortages</button></div>`
+    :'';
+  const matHeader=canInvReview?'Review materials':'Materials';
+  const matCols=canInvReview
+    ?`<thead><tr><th>Material</th><th>Requested</th><th>In stock</th></tr></thead>
+    <tbody>${t.materials.map(m=>`<tr>
+      <td style="font-weight:600;">${esc(m.name.split(':').pop())}</td>
+      <td style="text-align:center;">${m.requestedQty} ${esc(m.unit)}</td>
+      <td style="text-align:center;font-weight:700;color:${getStockAvailableForMaterial(m.name)>0?'var(--gn)':'var(--rd)'};">${getStockAvailableForMaterial(m.name)}</td>
+    </tr>`).join('')}</tbody>`
+    :`<thead><tr><th>Material</th><th>Requested</th><th>Released</th><th>Still needed</th><th>Status</th></tr></thead>
+    <tbody>${t.materials.map(m=>{const done=(m.remainingQty||0)===0;return`<tr>
+      <td style="font-weight:600;">${esc(m.name.split(':').pop())}</td>
+      <td style="text-align:center;">${m.requestedQty} ${esc(m.unit)}</td>
+      <td style="text-align:center;color:var(--gn);font-weight:700;">${m.fulfilledQty||0}</td>
+      <td style="text-align:center;color:${done?'var(--gn)':'var(--rd)'};font-weight:700;">${m.remainingQty||0}</td>
+      <td><span class="badge ${done?'badge-completed':'badge-pending'}">${done?'Done':'Need PO'}</span></td>
+    </tr>`}).join('')}</tbody>`;
   el.innerHTML=`<div style="padding:22px 28px;">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
       <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:var(--mg);">${esc(t.no)}</div>
       <span class="badge badge-${statusBadgeClass(t.status)}">${t.status}</span>
       ${t.urgent?'<span class="badge badge-urgent">⚡ URGENT</span>':''}
     </div>
-    ${renderBillingGatePanel(t,{forPO:_currentUser?.role==='po_officer'})}
+    <div style="font-size:12px;color:var(--soft);background:var(--paper);border-radius:var(--r);padding:10px 14px;margin-bottom:16px;line-height:1.55;">${esc(getOrderFlowLabel(t))}</div>
+    ${showBilling?renderBillingGatePanel(t,{forPO:role==='po_officer'}):''}
     <div class="fr2">
+      <div><div class="form-lbl">Order No.</div><div style="font-weight:600;">${esc(t.no)}</div></div>
+      <div><div class="form-lbl">Engineer</div><div style="font-weight:600;">${esc(t.engineerName||t.submittedBy||'–')}</div></div>
       <div><div class="form-lbl">PM</div><div style="font-weight:600;">${esc(t.pm)}</div></div>
       <div><div class="form-lbl">Project</div><div style="font-weight:600;">${esc(t.project)}</div></div>
       ${t.siteLocation?`<div><div class="form-lbl">Site / Location</div><div style="font-weight:600;">${esc(t.siteLocation)}</div></div>`:''}
       <div><div class="form-lbl">Date Needed</div><div>${fmtDate(t.dateNeeded)}</div></div>
       <div><div class="form-lbl">Submitted</div><div>${fmtDT(t.submittedAt)}</div></div>
+      ${t.inventoryReviewedAt?`<div><div class="form-lbl">Inventory reviewed</div><div>${fmtDT(t.inventoryReviewedAt)} · ${esc(t.inventoryReviewedBy||'–')}</div></div>`:''}
     </div>
     ${t.remarks?`<div style="margin-bottom:14px;"><div class="form-lbl">Remarks</div><div>${esc(t.remarks)}</div></div>`:''}
-    <div style="border-top:1px solid var(--bd);margin:12px 0 16px;"></div>
-    <div style="font-family:'Syne',sans-serif;font-size:11px;font-weight:700;color:var(--soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;">Materials (${pct}% Fulfilled)</div>
+    ${invReviewTable}
+    ${canInvReview?'':`<div style="border-top:1px solid var(--bd);margin:12px 0 16px;"></div>
+    <div style="font-family:'Syne',sans-serif;font-size:11px;font-weight:700;color:var(--soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;">${matHeader} (${pct}% released)</div>
     <div style="height:6px;background:var(--paper);border-radius:3px;margin-bottom:14px;overflow:hidden;"><div style="height:6px;background:var(--gn);border-radius:3px;width:${pct}%;transition:width .5s;"></div></div>
-    <div class="tbl-wrap"><table><thead><tr><th>Material</th><th>Requested</th><th>Fulfilled</th><th>Remaining</th><th>Status</th></tr></thead>
-    <tbody>${t.materials.map(m=>{const done=m.remainingQty===0;return`<tr>
-      <td style="font-weight:600;">${esc(m.name.split(':').pop())}</td>
-      <td style="text-align:center;">${m.requestedQty} ${esc(m.unit)}</td>
-      <td style="text-align:center;color:var(--gn);font-weight:700;">${m.fulfilledQty}</td>
-      <td style="text-align:center;color:${done?'var(--gn)':'var(--rd)'};font-weight:700;">${m.remainingQty}</td>
-      <td><span class="badge ${done?'badge-completed':'badge-pending'}">${done?'Done':'Pending'}</span></td>
-    </tr>`}).join('')}</tbody></table></div>
+    <div class="tbl-wrap"><table>${matCols}</table></div>`}
     ${t.linkedPOId?`<div style="margin-top:16px;padding:12px 16px;background:var(--mg-lt);border:1.5px solid var(--mg);border-radius:var(--r);font-size:12.5px;">📋 Linked PO: <strong>${esc(t.linkedPONo||'–')}</strong></div>`:''}
     ${(t.bossApproved||t.financeApproved)?`<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
       <span class="approval-pill ${t.bossApproved?'yes':'no'}">Boss: ${t.bossApproved?'Approved':'Pending'}</span>
@@ -1077,7 +1381,6 @@ function viewTicketDetail(id) {
       <div class="audit-trail-list">${t.auditTrail.slice().reverse().map(a=>`<div class="audit-trail-row"><div style="font-weight:600;font-size:12px;">${esc(a.action)}</div><div style="font-size:11px;color:var(--faint);">${esc(a.by)} · ${fmtDT(a.at)}</div>${a.note?`<div style="font-size:11.5px;color:var(--soft);margin-top:2px;">${esc(a.note)}</div>`:''}</div>`).join('')}</div>
     </div>`:''}
     ${convertBtn}
-    ${isDone&&t.status!=='Completed'?`<div style="margin-top:16px;"><button class="btn btn-gn" onclick="completeTicketAndDeductInventory('${id}')" style="width:100%;justify-content:center;">✓ Mark as Completed</button></div>`:''}
   </div>`;
   navigate('emp-ticket-detail', null);
 }
@@ -1246,16 +1549,21 @@ function submitTicket() {
     if(n&&q>0) mats.push({name:n,requestedQty:q,unit:u,fulfilledQty:0,remainingQty:q,brand:''});
   }
   if(!mats.length) { toast('Error: Add at least one material.'); return; }
-  const no='TKT-'+new Date().getFullYear()+'-'+String(DB.tickets.length+1).padStart(3,'0');
+  const no=generateOrderNumber();
   const submittedAt=nowISO();
   DB.tickets.unshift({
     id:uid(),no,pm,project:pn,projectId,bossApproved:false,financeApproved:false,
     urgent:urg,dateNeeded:dn,submittedBy:_currentUser?.name||'–',submittedRole:_currentUser?.role||'',
     engineerName:_currentUser?.role==='engineer'?_currentUser?.name||'':'',siteLocation,submittedAt,
-    status:'Pending',remarks,materials:mats,
-    auditTrail:[{action:'Created',by:_currentUser?.name||'–',at:submittedAt,note:'Ticket created.'}],
+    status:'Pending Inventory',remarks,materials:mats,
+    auditTrail:[{action:'Created',by:_currentUser?.name||'–',at:submittedAt,note:'Material order submitted — sent to Inventory Manager.'}],
   });
-  saveDB(); toast('Ticket submitted.','ok');
+  reserveMaterialsForTicket(DB.tickets[0]);
+  pushNotification({type:'blue',title:'New material order',text:`${no} from ${_currentUser?.name||'Engineer'} — ${pn}. Stock reserved where available.`,roles:['inventory_manager','po_officer'],source:'material-order'});
+  logSystemActivity('Material order submitted',no,`Project: ${pn} — materials reserved`);
+  saveDB();
+  updateOrderNavBadges();
+  toast(`Order ${no} submitted. Inventory Manager will review stock first.`,'ok');
   navigate('emp-dashboard', document.querySelector('[data-page="emp-dashboard"]'));
 }
 
@@ -1524,8 +1832,8 @@ function formatSupplierPriceLabel(entry) {
 }
 
 function updatePOLineSupplierOptions(id, itemName) {
-  const select=document.getElementById('polsup-'+id);
-  const info=document.getElementById('polsupinfo-'+id);
+  const select=poEl('polsup-'+id);
+  const info=poEl('polsupinfo-'+id);
   if(!select) return;
 
   const options=getSupplierPriceOptions(itemName);
@@ -1553,15 +1861,15 @@ function updatePOLineSupplierOptions(id, itemName) {
 
 function addSupplierFromLineItem(id) {
   const name = (prompt('Enter new supplier name:')||'').trim();
-  if(!name) { const sel=document.getElementById('polsup-'+id); if(sel) sel.value=''; return; }
+  if(!name) { const sel=poEl('polsup-'+id); if(sel) sel.value=''; return; }
   const termsStr = prompt(`Credit terms (days) for ${name} (leave blank for 0):`,`30`);
   const terms = parseInt(termsStr)||0;
   const contact = (prompt(`Contact info (phone/email) for ${name} (optional):`)||'').trim();
   const newSup = {id:uid(), name, terms, tin:'', address:'', contact, itemPrices:[]};
 
   // If the line item has an item and a unit price entered, save that price under the new supplier
-  const itemName = (document.getElementById('polid-'+id)?.value||'').trim();
-  const currentPrice = (document.getElementById('polip-'+id)?.value||'').trim();
+  const itemName = (poEl('polid-'+id)?.value||'').trim();
+  const currentPrice = (poEl('polip-'+id)?.value||'').trim();
   if(itemName) {
     const inv = findInventoryItem(itemName);
     let priceToSave = '';
@@ -1581,14 +1889,14 @@ function addSupplierFromLineItem(id) {
   try{ buildDatalist(); }catch(e){}
   try{ if(typeof renderSuppliersList==='function') renderSuppliersList(); }catch(e){}
   // refresh options for all line items
-  poLineItems.forEach(lid=>updatePOLineSupplierOptions(lid, document.getElementById('polid-'+lid)?.value||''));
-  const sel=document.getElementById('polsup-'+id);
+  poLineItems.forEach(lid=>updatePOLineSupplierOptions(lid, poEl('polid-'+lid)?.value||''));
+  const sel=poEl('polsup-'+id);
   if(sel) sel.value=newSup.id;
   // If we saved a price for this item, set the line item price input
   if(itemName && newSup.itemPrices.length) {
     const rec = newSup.itemPrices.find(ip=> (ip.itemName===itemName) || (ip.itemId && ip.itemId===findInventoryItem(itemName)?.id));
     if(rec) {
-      const priceEl=document.getElementById('polip-'+id);
+      const priceEl=poEl('polip-'+id);
       if(priceEl) priceEl.value = rec.price;
     }
   }
@@ -1597,7 +1905,7 @@ function addSupplierFromLineItem(id) {
 }
 
 function resolvePOLineSupplier(id, itemName) {
-  const selectedId=document.getElementById('polsup-'+id)?.value||'';
+  const selectedId=poEl('polsup-'+id)?.value||'';
   const options=getSupplierPriceOptions(itemName);
   if(selectedId) {
     const chosen=options.find(entry=>entry.supplier.id===selectedId);
@@ -1607,12 +1915,13 @@ function resolvePOLineSupplier(id, itemName) {
 }
 
 function getPOLineShortageState(id) {
-  const itemName=(document.getElementById('polid-'+id)?.value||'').trim();
-  const requestedQty=parseFloat(document.getElementById('poliq-'+id)?.value)||0;
+  const itemName=(poEl('polid-'+id)?.value||'').trim();
+  const requestedQty=parseFloat(poEl('poliq-'+id)?.value)||0;
   const item=findInventoryItem(itemName);
-  const availableQty=parseFloat(item?.qty)||0;
+  const availableQty=item?getAvailableQty(item):0;
   const shortageQty=Math.max(0, requestedQty-availableQty);
-  return {itemName, requestedQty, availableQty, shortageQty, item};
+  const purchaseQty=requestedQty;
+  return {itemName, requestedQty, availableQty, shortageQty, purchaseQty, item};
 }
 
 function ensurePoReleaseQueue() {
@@ -1627,7 +1936,7 @@ function syncPoReleaseQueueFromPO(po) {
   (po.items||[]).forEach((item, index)=>{
     const inv=findInventoryItem(item.desc);
     const requestedQty=Number(item.requestedQty ?? item.qty ?? 0);
-    const availableQty=Number(item.availableQty ?? inv?.qty ?? 0);
+    const availableQty=Number(item.availableQty ?? (inv?getAvailableQty(inv):0) ?? 0);
     // determine shortage (to be purchased) and release (to be prepared from warehouse)
     const shortageQty=Math.max(0, requestedQty - availableQty);
     const releaseQty=Math.max(0, Math.min(requestedQty, availableQty));
@@ -1746,28 +2055,58 @@ function preparePoRelease(queueId) {
 }
 
 // ── AUTO-GENERATE PO NUMBER (Feature 2) ───────────────────────
-function generateNextPONumber() {
-  const year=new Date().getFullYear();
+function normalizePONumber(raw) {
+  const m=String(raw||'').trim().toUpperCase().match(/^RS(\d{4})[-_]?(\d+)$/);
+  if(!m) return String(raw||'').trim();
+  return `RS${m[1]}_${String(parseInt(m[2],10)).padStart(4,'0')}`;
+}
+
+function parsePONumber(no) {
+  const m=normalizePONumber(no).match(/^RS(\d{4})_(\d+)$/i);
+  if(!m) return null;
+  return {year:parseInt(m[1],10),seq:parseInt(m[2],10)};
+}
+
+function generateNextPONumber(forYear) {
+  const year=forYear||new Date().getFullYear();
   const prefix=`RS${year}_`;
-  const existing=DB.purchase_orders.map(p=>{
-    const m=(p.no||'').match(/RS\d{4}_(\d+)/);
-    return m?parseInt(m[1]):0;
+  const nums=DB.purchase_orders.map(p=>{
+    const parsed=parsePONumber(p.no);
+    return parsed&&parsed.year===year?parsed.seq:0;
   });
-  const max=existing.length?Math.max(...existing):0;
-  return prefix+String(max+1).padStart(4,'0');
+  const next=(nums.length?Math.max(...nums):0)+1;
+  return prefix+String(next).padStart(4,'0');
 }
 
 function isPONumberDuplicate(no, excludeId) {
-  return DB.purchase_orders.some(p=>p.no===no&&p.id!==excludeId);
+  const n=String(no||'').trim();
+  if(!n) return false;
+  return DB.purchase_orders.some(p=>String(p.no||'').trim().toLowerCase()===n.toLowerCase()&&p.id!==excludeId);
+}
+
+function ensureUniquePONumber(preferred) {
+  let no=String(preferred||'').trim();
+  if(!parsePONumber(no)) no=generateNextPONumber();
+  let parsed=parsePONumber(no);
+  let guard=0;
+  while(isPONumberDuplicate(no,null)&&guard<500) {
+    const year=parsed?.year||new Date().getFullYear();
+    const seq=(parsed?.seq||0)+1;
+    no=`RS${year}_`+String(seq).padStart(4,'0');
+    parsed=parsePONumber(no);
+    guard++;
+  }
+  if(isPONumberDuplicate(no,null)) no=generateNextPONumber();
+  return no;
 }
 
 let _pendingTicketConversion = null;
 
 function prefillPOFromTicket(ticket) {
   if(!ticket) return;
-  const pmEl=document.getElementById('po-f-pm');
-  const remarksEl=document.getElementById('po-f-remarks');
-  const projEl=document.getElementById('po-f-project');
+  const pmEl=poEl('po-f-pm');
+  const remarksEl=poEl('po-f-remarks');
+  const projEl=poEl('po-f-project');
   if(pmEl) pmEl.value=ticket.pm||ticket.engineerName||_currentUser?.name||'';
   if(projEl) projEl.value=ticket.project||'';
   if(remarksEl) {
@@ -1775,16 +2114,16 @@ function prefillPOFromTicket(ticket) {
     remarksEl.dataset.fromTicketId = ticket.id;
     remarksEl.dataset.fromTicketNo = ticket.no;
   }
-  poLineItems.slice().forEach(id=>document.getElementById('poli-'+id)?.remove());
+  poLineItems.slice().forEach(id=>poEl('poli-'+id)?.remove());
   poLineItems=[];
   (ticket.materials||[]).forEach(m=>{
     if((m.remainingQty||0) > 0) {
       addPOLineItem();
       const id=poLineItems[poLineItems.length-1];
-      const descEl=document.getElementById('polid-'+id);
-      const qtyEl=document.getElementById('poliq-'+id);
-      const unitEl=document.getElementById('poliu-'+id);
-      const projTagEl=document.getElementById('polipj-'+id);
+      const descEl=poEl('polid-'+id);
+      const qtyEl=poEl('poliq-'+id);
+      const unitEl=poEl('poliu-'+id);
+      const projTagEl=poEl('polipj-'+id);
       if(descEl) descEl.value=m.name||'';
       if(qtyEl) qtyEl.value=m.remainingQty||m.requestedQty||'';
       if(unitEl) unitEl.value=m.unit||'';
@@ -1803,8 +2142,16 @@ function proceedConvertTicketToPO(ticket) {
 
 function convertTicketToPO(ticketId) {
   const ticket=DB.tickets.find(x=>x.id===ticketId);
-  if(!ticket) { toast('Error: Ticket not found.'); return; }
-  if(ticket.linkedPOId) { toast('Warning: This ticket is already linked to a PO.'); return; }
+  if(!ticket) { toast('Error: Order not found.'); return; }
+  if(ticket.linkedPOId) { toast('Warning: This order is already linked to a PO.'); return; }
+  if(!ticket.inventoryReviewedAt) {
+    toast('Error: Inventory Manager must review warehouse stock and release available items first.');
+    return;
+  }
+  if(!ticketNeedsPurchase(ticket)) {
+    toast('Warning: This order has no purchase shortages — nothing to buy.');
+    return;
+  }
 
   if(ticket.bossApproved&&ticket.financeApproved) {
     appendTicketAudit(ticket,'PO bypassed gate','Billing gate bypassed — Boss & Finance approved');
@@ -1843,12 +2190,19 @@ function convertTicketToPO(ticketId) {
 let poLineItems=[];
 let _poFormWrapId='req-po-form-wrap';
 
+function poFormWrap() { return document.getElementById(_poFormWrapId); }
+function poEl(id) { const w=poFormWrap(); return w?w.querySelector('#'+id):document.getElementById(id); }
+
 function initPOForm(wrapId) {
   _poFormWrapId = wrapId||'req-po-form-wrap';
   poLineItems=[];
+  const otherWrapId=_poFormWrapId==='po-officer-form-wrap'?'req-po-form-wrap':'po-officer-form-wrap';
+  const otherWrap=document.getElementById(otherWrapId);
+  if(otherWrap) otherWrap.innerHTML='';
   const wrap=document.getElementById(_poFormWrapId);
   if(!wrap) return;
   const poNo=generateNextPONumber();
+  const cancelPage=_poFormWrapId==='po-officer-form-wrap'?'po-dashboard':'req-dashboard';
 
   const suppliersOptions=DB.suppliers.map(s=>`<option value="${esc(s.name)}" data-id="${s.id}">`).join('');
   const projectOptions=DB.projects.map(p=>`<option value="${esc(p.name)}">`).join('');
@@ -1858,7 +2212,7 @@ function initPOForm(wrapId) {
     <div class="fr2">
       <div class="fl">
         <div class="form-lbl">PO Number <span style="color:var(--rd);">*</span></div>
-        <input class="fc" id="po-f-no" value="${poNo}" placeholder="e.g. RS2025_0042">
+        <input class="fc" id="po-f-no" value="${poNo}" placeholder="e.g. RS2026_0042">
         <div style="font-size:10.5px;color:var(--faint);margin-top:4px;">Auto-generated · You may override manually.</div>
       </div>
       <div class="fl"><div class="form-lbl">Date</div><input class="fc" id="po-f-date" type="date" value="${today()}" onchange="poUpdateDueDate()"></div>
@@ -1898,12 +2252,13 @@ function initPOForm(wrapId) {
       Total: <span id="po-total-preview">₱0.00</span>
     </div>
     <div style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap;">
-      <button class="btn btn-ol" onclick="navigate('${_poFormWrapId==='po-officer-form-wrap'?'po-dashboard':'req-dashboard'}',document.querySelector('[data-page=\\'${_poFormWrapId==='po-officer-form-wrap'?'po-dashboard':'req-dashboard'}\\']'))">Cancel</button>
-      <button class="btn btn-mg btn-lg" onclick="savePO()">Submit P.O. →</button>
+      <button type="button" class="btn btn-ol" onclick="navigate('${cancelPage}')">Cancel</button>
+      <button type="button" class="btn btn-mg btn-lg" id="po-submit-btn">Submit P.O.</button>
     </div>`;
 
   poUpdateDueDate();
   addPOLineItem();
+  wrap.querySelector('#po-submit-btn')?.addEventListener('click', savePO);
   if(_pendingTicketConversion) prefillPOFromTicket(_pendingTicketConversion);
   else if(isDemoSession()) setTimeout(fillSamplePOForm, 80);
 }
@@ -1913,41 +2268,41 @@ function fillSamplePOForm() {
     toast('Ticket data already loaded for this PO.','ok');
     return;
   }
-  poLineItems.slice().forEach(id=>document.getElementById('poli-'+id)?.remove());
+  poLineItems.slice().forEach(id=>poEl('poli-'+id)?.remove());
   poLineItems=[];
   addPOLineItem();
   const id=poLineItems[0];
   if(!id) return;
-  const set=(suffix,val)=>{const el=document.getElementById('pol'+suffix+'-'+id)||document.getElementById('po-f-'+suffix);if(el)el.value=val;};
-  const desc=document.getElementById('polid-'+id);
+  const set=(suffix,val)=>{const el=poEl('pol'+suffix+'-'+id)||poEl('po-f-'+suffix);if(el)el.value=val;};
+  const desc=poEl('polid-'+id);
   if(desc) { desc.value='PLUMBING:PVC PIPE 2 INCH'; updatePOItemStatus(id); }
-  const qty=document.getElementById('poliq-'+id); if(qty) qty.value='12';
-  const unit=document.getElementById('poliu-'+id); if(unit) unit.value='LEN';
-  const proj=document.getElementById('polipj-'+id);
+  const qty=poEl('poliq-'+id); if(qty) qty.value='12';
+  const unit=poEl('poliu-'+id); if(unit) unit.value='LEN';
+  const proj=poEl('polipj-'+id);
   if(proj) proj.value='Smilee Monumento — Interior Fit-out';
-  const wh=document.getElementById('polwh-'+id); if(wh) wh.value='MAY_006';
-  const supSel=document.getElementById('polsup-'+id);
+  const wh=poEl('polwh-'+id); if(wh) wh.value='MAY_006';
+  const supSel=poEl('polsup-'+id);
   if(supSel) {
     const neltex=[...supSel.options].find(o=>o.textContent.includes('Neltex'));
     if(neltex) supSel.value=neltex.value;
     else if(supSel.options.length>1) supSel.selectedIndex=1;
     updatePOLineItemPriceFromSupplier(id);
   }
-  const pm=document.getElementById('po-f-pm'); if(pm) pm.value='Marco Rivera';
-  const whb=document.getElementById('po-f-warehouse'); if(whb) whb.value='Danny Pascual';
-  const rem=document.getElementById('po-f-remarks'); if(rem) rem.value='Demo PO — Smilee operatory PVC rough-in';
+  const pm=poEl('po-f-pm'); if(pm) pm.value='Marco Rivera';
+  const whb=poEl('po-f-warehouse'); if(whb) whb.value='Danny Pascual';
+  const rem=poEl('po-f-remarks'); if(rem) rem.value='Demo PO — Smilee operatory PVC rough-in';
   calcPOTotal();
   toast('Sample PO loaded — review and submit.','ok');
 }
 
 function poOnSupplierChange() {
-  const name=document.getElementById('po-f-vendor')?.value||'';
+  const name=poEl('po-f-vendor')?.value||'';
   const sup=DB.suppliers.find(s=>s.name===name);
-  const infoEl=document.getElementById('po-supplier-info');
+  const infoEl=poEl('po-supplier-info');
   if(sup) {
     if(infoEl) infoEl.innerHTML=`<span class="terms-tag">💳 ${sup.terms>0?sup.terms+' day terms':'COD'}</span> ${sup.contact?`<span style="margin-left:8px;color:var(--soft);">${esc(sup.contact)}</span>`:''}`;
     // Auto-fill terms
-    const termsEl=document.getElementById('po-f-terms');
+    const termsEl=poEl('po-f-terms');
     if(termsEl) { termsEl.value=sup.terms||0; poUpdateDueDate(); }
     // Refresh all line item prices for this supplier
     poLineItems.forEach(id=>updatePOLineItemPriceFromSupplier(id));
@@ -1957,14 +2312,14 @@ function poOnSupplierChange() {
 }
 
 function poOnProjectChange() {
-  const name=document.getElementById('po-f-project')?.value||'';
+  const name=poEl('po-f-project')?.value||'';
   const proj=DB.projects.find(p=>p.name===name);
-  const infoEl=document.getElementById('po-project-info');
+  const infoEl=poEl('po-project-info');
   if(proj) {
     if(infoEl) infoEl.innerHTML=`<span class="project-code">${esc(proj.code||'')}</span> <span style="color:var(--soft);font-size:11px;">${esc(proj.client||'')}</span>`;
     // Default all item project tags to this project
     poLineItems.forEach(id=>{
-      const projSel=document.getElementById('polipj-'+id);
+      const projSel=poEl('polipj-'+id);
       if(projSel&&!projSel.value) projSel.value=name;
     });
   } else {
@@ -1973,9 +2328,9 @@ function poOnProjectChange() {
 }
 
 function poUpdateDueDate() {
-  const date=document.getElementById('po-f-date')?.value||today();
-  const terms=parseInt(document.getElementById('po-f-terms')?.value)||0;
-  const dueEl=document.getElementById('po-f-duedate');
+  const date=poEl('po-f-date')?.value||today();
+  const terms=parseInt(poEl('po-f-terms')?.value)||0;
+  const dueEl=poEl('po-f-duedate');
   if(dueEl) {
     if(terms>0) {
       const due=addDays(date,terms);
@@ -1991,7 +2346,7 @@ function poUpdateDueDate() {
 
 function addPOLineItem() {
   const id=uid(); poLineItems.push(id);
-  const wrap=document.getElementById('po-li-items');
+  const wrap=poEl('po-li-items');
   if(!wrap) return;
   const projectOptions=DB.projects.map(p=>`<option value="${esc(p.name)}">`).join('');
   const currentProject='';
@@ -2050,34 +2405,34 @@ function addPOLineItem() {
   // Auto-fill WH order from project
   if(currentProject) {
     const proj=DB.projects.find(p=>p.name===currentProject);
-    if(proj) { const whEl=document.getElementById('polwh-'+id); if(whEl&&proj.code) whEl.value=proj.code; }
+    if(proj) { const whEl=poEl('polwh-'+id); if(whEl&&proj.code) whEl.value=proj.code; }
   }
 }
 
 function updatePOItemStatus(id) {
-  const itemName=document.getElementById('polid-'+id)?.value.trim();
-  const statusEl=document.getElementById('polis-'+id);
-  const supplierWrap=document.getElementById('po-li-supplier-wrap-'+id);
-  const priceWrap=document.getElementById('po-li-price-wrap-'+id);
-  const itemInfo=document.getElementById('politeminfo-'+id);
-  const supplierInfo=document.getElementById('polsupinfo-'+id);
+  const itemName=poEl('polid-'+id)?.value.trim();
+  const statusEl=poEl('polis-'+id);
+  const supplierWrap=poEl('po-li-supplier-wrap-'+id);
+  const priceWrap=poEl('po-li-price-wrap-'+id);
+  const itemInfo=poEl('politeminfo-'+id);
+  const supplierInfo=poEl('polsupinfo-'+id);
   if(!statusEl) return;
   const item=findInventoryItem(itemName);
   if(item) {
     const s=stockStatus(item);
-    statusEl.textContent=`${item.qty} ${item.unit}`;
+    statusEl.textContent=`${getAvailableQty(item)} avail`;
     statusEl.style.background=s.cls==='ok'?'#d4edda':s.cls==='low'?'#fff3cd':'#f8d7da';
     statusEl.style.color=s.cls==='ok'?'#155724':s.cls==='low'?'#856404':'#721c24';
-    document.getElementById('poliu-'+id).value=item.unit;
+    const unitEl=poEl('poliu-'+id); if(unitEl) unitEl.value=item.unit;
     const shortageState=getPOLineShortageState(id);
-    const buyingNeeded=shortageState.shortageQty>0;
+    const buyingNeeded=shortageState.purchaseQty>0;
     if(itemInfo) {
       if(shortageState.requestedQty<=0) {
         itemInfo.innerHTML='<span style="color:var(--faint);">Enter a quantity to see whether the item should be bought.</span>';
-      } else if(buyingNeeded) {
-        itemInfo.innerHTML=`<span class="terms-tag">Need to buy ${shortageState.shortageQty} ${esc(item.unit||'PCS')}</span> <span style="margin-left:8px;color:var(--soft);">${shortageState.availableQty} already in warehouse · ${shortageState.requestedQty} requested</span>`;
+      } else if(shortageState.shortageQty>0) {
+        itemInfo.innerHTML=`<span class="terms-tag">Need to buy ${shortageState.shortageQty} ${esc(item.unit||'PCS')}</span> <span style="margin-left:8px;color:var(--soft);">${shortageState.availableQty} available · ${shortageState.requestedQty} requested</span>`;
       } else {
-        itemInfo.innerHTML=`<span class="terms-tag">Warehouse stock available</span> <span style="margin-left:8px;color:var(--soft);">${shortageState.availableQty} available meets the ${shortageState.requestedQty} requested.</span>`;
+        itemInfo.innerHTML=`<span class="terms-tag">PO qty ${shortageState.purchaseQty} ${esc(item.unit||'PCS')}</span> <span style="margin-left:8px;color:var(--soft);">${shortageState.availableQty} available in warehouse</span>`;
       }
     }
     if(supplierWrap) supplierWrap.style.display=buyingNeeded?'':'none';
@@ -2086,8 +2441,8 @@ function updatePOItemStatus(id) {
       updatePOLineSupplierOptions(id, itemName);
       updatePOLineItemPriceFromSupplier(id);
     } else {
-      const select=document.getElementById('polsup-'+id);
-      const price=document.getElementById('polip-'+id);
+      const select=poEl('polsup-'+id);
+      const price=poEl('polip-'+id);
       if(select) select.innerHTML='<option value="">Warehouse item</option>';
       if(price) price.value='';
       if(supplierInfo) supplierInfo.innerHTML='';
@@ -2099,8 +2454,8 @@ function updatePOItemStatus(id) {
     if(itemInfo) itemInfo.innerHTML='<span style="color:var(--faint);">Select a valid item to see warehouse status and supplier options.</span>';
     if(supplierWrap) supplierWrap.style.display='';
     if(priceWrap) priceWrap.style.display='';
-    const select=document.getElementById('polsup-'+id);
-    const info=document.getElementById('polsupinfo-'+id);
+    const select=poEl('polsup-'+id);
+    const info=poEl('polsupinfo-'+id);
     if(select) select.innerHTML='<option value="">Auto-select best price</option>';
     if(info) info.innerHTML='<span style="color:var(--faint);">Select a valid item to see supplier matches.</span>';
   }
@@ -2108,19 +2463,19 @@ function updatePOItemStatus(id) {
 }
 
 function updatePOLineItemPriceFromSupplier(id) {
-  const itemName=document.getElementById('polid-'+id)?.value.trim();
-  const supEl=document.getElementById('polsup-'+id);
-  const infoEl=document.getElementById('polsupinfo-'+id);
-  const priceEl=document.getElementById('polip-'+id);
+  const itemName=poEl('polid-'+id)?.value.trim();
+  const supEl=poEl('polsup-'+id);
+  const infoEl=poEl('polsupinfo-'+id);
+  const priceEl=poEl('polip-'+id);
   if(!itemName) return;
 
   // If user picked the inline 'Add new supplier' option, launch add flow
   if(supEl && supEl.value==='__add_new__') { addSupplierFromLineItem(id); return; }
 
   const shortageState=getPOLineShortageState(id);
-  if(shortageState.shortageQty<=0) {
+  if(shortageState.purchaseQty<=0) {
     if(priceEl) priceEl.value='';
-    if(infoEl) infoEl.innerHTML='<span class="terms-tag">Warehouse stock available</span> <span style="margin-left:8px;color:var(--soft);">Buying is disabled for quantities already covered by stock.</span>';
+    if(infoEl) infoEl.innerHTML='<span style="color:var(--faint);">Enter a quantity to price this line.</span>';
     calcPOTotal();
     return;
   }
@@ -2139,63 +2494,84 @@ function updatePOLineItemPriceFromSupplier(id) {
   }
 }
 
-function removePOLine(id) { poLineItems=poLineItems.filter(x=>x!==id); document.getElementById('poli-'+id)?.remove(); calcPOTotal(); }
+function removePOLine(id) { poLineItems=poLineItems.filter(x=>x!==id); poEl('poli-'+id)?.remove(); calcPOTotal(); }
 
 function calcPOTotal() {
   let total=0;
   for(const id of poLineItems) {
     const shortageState=getPOLineShortageState(id);
-    const p=parseFloat(document.getElementById('polip-'+id)?.value)||0;
-    total+=shortageState.shortageQty*p;
+    const p=parseFloat(poEl('polip-'+id)?.value)||0;
+    total+=shortageState.purchaseQty*p;
   }
-  const el=document.getElementById('po-total-preview'); if(el) el.textContent=peso(total);
+  const el=poEl('po-total-preview'); if(el) el.textContent=peso(total);
+}
+
+function inferPOItemProject(id) {
+  let proj=(poEl('polipj-'+id)?.value||'').trim();
+  if(proj) return proj;
+  const wh=(poEl('polwh-'+id)?.value||'').trim();
+  if(wh) {
+    const match=DB.projects.find(p=>(p.code||'').toLowerCase()===wh.toLowerCase());
+    if(match) return match.name;
+  }
+  const fromTicketId=poEl('po-f-remarks')?.dataset.fromTicketId;
+  if(fromTicketId) {
+    const t=DB.tickets.find(x=>x.id===fromTicketId);
+    if(t?.project) return t.project;
+  }
+  if(_pendingTicketConversion?.project) return _pendingTicketConversion.project;
+  return '';
 }
 
 function savePO() {
-  const no=(document.getElementById('po-f-no')?.value||'').trim();
+  let no=normalizePONumber(poEl('po-f-no')?.value||'');
+  const noEl=poEl('po-f-no');
+  if(noEl) noEl.value=no;
   // Vendor and project are derived from line items (per-item supplier/project).
   let vendor = '';
   let project = '';
-  const pm=(document.getElementById('po-f-pm')?.value||'').trim();
-  const warehouseHandler=(document.getElementById('po-f-warehouse')?.value||'').trim();
-  const paymentOption=(document.getElementById('po-f-payoption')?.value||'COD').trim();
-  const bankDetails=(document.getElementById('po-f-bank')?.value||'').trim();
-  const requisitor=(document.getElementById('po-f-requisitor')?.value||_currentUser?.name||'').trim();
-  const remarks=(document.getElementById('po-f-remarks')?.value||'').trim();
-  const date=(document.getElementById('po-f-date')?.value)||today();
-  const terms=parseInt(document.getElementById('po-f-terms')?.value)||0;
-  const dueDate=document.getElementById('po-f-duedate')?.value||'';
-  const remarksEl=document.getElementById('po-f-remarks');
+  const pm=(poEl('po-f-pm')?.value||'').trim();
+  const warehouseHandler=(poEl('po-f-warehouse')?.value||'').trim();
+  const paymentOption=(poEl('po-f-payoption')?.value||'COD').trim();
+  const bankDetails=(poEl('po-f-bank')?.value||'').trim();
+  const requisitor=(poEl('po-f-requisitor')?.value||_currentUser?.name||'').trim();
+  const remarks=(poEl('po-f-remarks')?.value||'').trim();
+  const date=(poEl('po-f-date')?.value)||today();
+  const terms=parseInt(poEl('po-f-terms')?.value)||0;
+  const dueDate=poEl('po-f-duedate')?.value||'';
+  const remarksEl=poEl('po-f-remarks');
   const fromTicketId=remarksEl?.dataset.fromTicketId||'';
   const fromTicketNo=remarksEl?.dataset.fromTicketNo||'';
 
-  if(!no)     { toast('Error: PO Number is required.'); return; }
-  // Feature 2: uniqueness check
-  if(isPONumberDuplicate(no, null)) { toast(`Error: PO No. ${no} is already in use. Please use a different number.`); return; }
+  if(!no) { toast('Error: PO Number is required.'); return; }
+  if(!parsePONumber(no)) { toast('Error: PO number must follow format RS2026_0042 (RS + year + _ + sequence).'); return; }
+  if(isPONumberDuplicate(no,null)) {
+    no=ensureUniquePONumber(no);
+    const noEl=poEl('po-f-no');
+    if(noEl) noEl.value=no;
+  }
 
-
-  const sup=DB.suppliers.find(s=>s.name===vendor);
 
   const items=[];
   for(const id of poLineItems) {
-    const desc=(document.getElementById('polid-'+id)?.value||'').trim();
-    const shortageState=getPOLineShortageState(id);
+    const desc=(poEl('polid-'+id)?.value||'').trim();
     if(!desc) continue;
-    if(shortageState.requestedQty<=0) {
-      toast('Error: Add a quantity to the item before submitting the PO.');
-      return;
-    }
-    const unit=(document.getElementById('poliu-'+id)?.value||'PCS').trim();
-    const unitPrice=parseFloat(document.getElementById('polip-'+id)?.value)||0;
-    const itemProject=(document.getElementById('polipj-'+id)?.value||project).trim();
-    const whOrderNo=(document.getElementById('polwh-'+id)?.value||'').trim();
-    const qty=shortageState.shortageQty;
+    const shortageState=getPOLineShortageState(id);
+    if(shortageState.requestedQty<=0) continue;
+    const unit=(poEl('poliu-'+id)?.value||'PCS').trim();
+    let unitPrice=parseFloat(poEl('polip-'+id)?.value)||0;
+    const itemProject=inferPOItemProject(id)||project;
+    const whOrderNo=(poEl('polwh-'+id)?.value||'').trim();
+    const qty=shortageState.purchaseQty;
     if(qty<=0) continue;
     const supplierChoice=resolvePOLineSupplier(id, desc);
     const supplierId=supplierChoice?.supplier?.id||'';
     const supplierName=supplierChoice?.supplier?.name||'';
     const supplierPrice=supplierChoice?.priceRec?.price||'';
-    if(desc&&qty>0) items.push({desc,qty,requestedQty:shortageState.requestedQty,availableQty:shortageState.availableQty,unit,unitPrice,project:itemProject,whOrderNo,supplierId,supplierName,supplierPrice});
+    if(!unitPrice&&supplierChoice?.priceRec?.price) unitPrice=parseFloat(supplierChoice.priceRec.price)||0;
+    if(!supplierName) { toast('Error: Select a supplier for each line item (or pick a registered inventory item with supplier prices).'); return; }
+    if(unitPrice<=0) { toast('Error: Enter a unit price for each line item.'); return; }
+    items.push({desc,qty,requestedQty:shortageState.requestedQty,availableQty:shortageState.availableQty,unit,unitPrice,project:itemProject,whOrderNo,supplierId,supplierName,supplierPrice});
   }
   // Derive PO-level vendor/project from line items when possible
   const distinctVendors = [...new Set(items.map(i=>i.supplierName).filter(Boolean))];
@@ -2208,8 +2584,11 @@ function savePO() {
   const untagged=items.filter(i=>!i.project);
   if(untagged.length) { toast(`Error: All line items must be tagged to a project. ${untagged.length} item(s) missing project tag.`); return; }
 
+  const primarySupplier=items[0]?.supplierId
+    ?DB.suppliers.find(s=>s.id===items[0].supplierId)
+    :DB.suppliers.find(s=>s.name===vendor);
   const po={
-    id:uid(), no, vendor, supplierId:sup?.id||'', project, pm, date,
+    id:uid(), no, vendor, supplierId:primarySupplier?.id||items[0]?.supplierId||'', project, pm, date,
     terms, dueDate, paymentOption, bankDetails, remarks, status:'Pending',
     createdBy:_currentUser?.name||'–', requisitor, warehouseHandler, items,
     audit_trail:[{action:'Created', by:_currentUser?.name||'–', at:nowISO(), note:'Submitted for approval.'}],
@@ -2235,6 +2614,7 @@ function savePO() {
   const queuedItems=(DB.po_release_queue||[]).filter(q=>q.poId===po.id).slice(0,3).map(q=>q.itemLabel).join(', ');
   pushNotification({type:'blue',title:'PO waiting for approval',text:`${no} has shortage items queued for purchase${queuedItems?`: ${queuedItems}`:''}.`,roles:['admin','accountant','po_officer','inventory_manager'],source:'po-created'});
   toast('Success: Purchase order submitted!','ok');
+  showPOReceipt(po.id);
   const backPage=_poFormWrapId==='po-officer-form-wrap'?'po-dashboard':'req-dashboard';
   navigate(backPage, document.querySelector(`[data-page="${backPage}"]`));
 }
@@ -2405,7 +2785,10 @@ function updatePOStatus(id, status) {
 function showPOReceipt(id) {
   const p=DB.purchase_orders.find(x=>x.id===id); if(!p) return;
   const total=p.items.reduce((s,i)=>s+(i.qty||0)*(i.unitPrice||0),0);
-  const win=window.open('','_blank','width=900,height=700');
+  const statusLabel=p.status||'Pending';
+  const approvedLine=p.status==='Approved'||p.status==='Received'
+    ? `<div><strong>Approved by:</strong> ${esc(p.approvedBy||'–')}</div>`
+    : `<div><strong>Status:</strong> ${esc(statusLabel)} (awaiting approval)</div><div><strong>Submitted by:</strong> ${esc(p.createdBy||'–')}</div>`;
   const html=`<html><head><title>PO Receipt - ${p.no}</title>
   <style>body{font-family:Arial,Helvetica,sans-serif;color:#222;padding:20px} .hz{display:flex;justify-content:space-between;align-items:center}
   table{width:100%;border-collapse:collapse;margin-top:12px} th,td{padding:8px;border:1px solid #ddd;text-align:left} th{background:#f5f5f5}
@@ -2419,7 +2802,7 @@ function showPOReceipt(id) {
     <div><strong>Terms:</strong> ${p.terms>0?p.terms+' days':'COD'}</div>
     <div><strong>Payment:</strong> ${esc(p.paymentOption||'COD')}</div>
     ${p.bankDetails?`<div><strong>Bank:</strong> ${esc(p.bankDetails)}</div>`:''}
-    <div><strong>Approved by:</strong> ${esc(p.approvedBy||'–')}</div>
+    ${approvedLine}
     <div><strong>Remarks:</strong> ${esc(p.remarks||'–')}</div>
   </div>
   <table><thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Unit Price</th><th>Subtotal</th><th>Project Tag</th><th>WH Order</th></tr></thead>
@@ -2429,8 +2812,25 @@ function showPOReceipt(id) {
     <div style="text-align:center"><div style="height:50px"></div><div style="color:#666;font-size:12px;">________________________</div><div style="color:#666;font-size:11px;">Authorized Signature</div></div>
     <div><button class="btn" style="background:#0b6" onclick="window.print()">Print</button><button class="btn" style="background:#09f" onclick="window.close()">Close</button></div>
   </div></body></html>`;
-  win.document.write(html); win.document.close();
-  setTimeout(()=>{ try{win.focus();win.print();}catch(e){} },600);
+  const win=window.open('','_blank','width=900,height=700');
+  if(win) {
+    win.document.write(html);
+    win.document.close();
+    setTimeout(()=>{ try{win.focus();win.print();}catch(e){} },600);
+    return;
+  }
+  const frame=document.getElementById('po-print-frame');
+  if(frame) {
+    frame.srcdoc=html;
+    frame.onload=()=>{ try{frame.contentWindow.focus();frame.contentWindow.print();}catch(e){} };
+    return;
+  }
+  const el=document.createElement('iframe');
+  el.id='po-print-frame';
+  el.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  document.body.appendChild(el);
+  el.srcdoc=html;
+  el.onload=()=>{ try{el.contentWindow.focus();el.contentWindow.print();}catch(e){ toast('PO saved. Allow pop-ups to print, or open PO from inbox and approve to print again.','warn'); } };
 }
 
 // ── PO OFFICER DASHBOARD ──────────────────────────────────────
@@ -2439,21 +2839,22 @@ function renderPODashboard() {
   const pend=DB.purchase_orders.filter(p=>p.status==='Pending').length;
   const appr=DB.purchase_orders.filter(p=>p.status==='Approved').length;
   const recv=DB.purchase_orders.filter(p=>p.status==='Received').length;
-  const requests=DB.tickets.filter(t=>t.submittedRole==='engineer'&&!t.linkedPOId&&t.status!=='Completed');
+  const requests=getTicketsForPOOfficer();
   const stEl=id=>document.getElementById(id);
   if(stEl('po-stat-total')) stEl('po-stat-total').textContent=total;
   if(stEl('po-stat-pending')) stEl('po-stat-pending').textContent=pend;
   if(stEl('po-stat-approved')) stEl('po-stat-approved').textContent=appr;
   if(stEl('po-stat-received')) stEl('po-stat-received').textContent=recv;
   if(stEl('po-req-cnt')) stEl('po-req-cnt').textContent=requests.length;
+  updateOrderNavBadges();
 
   const reqEl=document.getElementById('po-req-list');
   if(reqEl) {
     reqEl.innerHTML=!requests.length
-      ? '<div class="empty-state"><div class="empty-icon">📋</div>No engineer requests waiting for review.</div>'
+      ? '<div class="empty-state"><div class="empty-icon">📋</div>No purchase shortages yet.<br><span style="font-size:11.5px;">Orders appear here after Inventory Manager releases warehouse stock.</span></div>'
       : `<div class="dash-grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;">
           ${requests.slice(0,6).map(t=>{
-            const materials=t.materials.map(m=>m.name.split(':').pop()).join(', ');
+            const shortages=t.materials.filter(m=>(m.remainingQty||0)>0).map(m=>`${m.name.split(':').pop()} ×${m.remainingQty}`).join(', ');
             const gate=getBillingGateStatus(t.projectId);
             const gateLbl=t.status==='Pending Override'
               ?'<span class="badge badge-pending-override" style="font-size:9px;">Override</span>'
@@ -2463,13 +2864,14 @@ function renderPODashboard() {
             return `<div class="dash-widget" style="margin:0;">
               <div class="dash-widget-head">
                 <div class="dash-widget-title" style="color:var(--mg);font-size:12px;">${esc(t.no)}</div>
+                <span class="badge badge-at-po" style="font-size:9px;">At PO</span>
                 ${gateLbl}
                 ${t.urgent?'<span class="badge badge-urgent" style="font-size:9px;">URGENT</span>':''}
               </div>
               <div class="dash-widget-body" style="padding:12px 14px;">
                 <div style="font-size:12px;font-weight:700;margin-bottom:4px;">${esc(t.project)}</div>
                 <div style="font-size:11px;color:var(--soft);margin-bottom:8px;">${esc(t.siteLocation||'No site location noted')}</div>
-                <div style="font-size:11px;color:var(--faint);line-height:1.6;">PM: ${esc(t.pm||'–')}<br>Requested: ${fmtDate((t.submittedAt||'').split('T')[0])}<br>Materials: ${esc(materials||'–')}</div>
+                <div style="font-size:11px;color:var(--faint);line-height:1.6;">Engineer: ${esc(t.engineerName||t.submittedBy||'–')}<br>Inventory reviewed: ${fmtDate((t.inventoryReviewedAt||'').split('T')[0])}<br><strong style="color:var(--or);">Still need:</strong> ${esc(shortages||'–')}</div>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
                   <button class="btn btn-ol btn-sm" onclick="viewTicketDetail('${t.id}')">Review</button>
                   ${!gate.passed&&!(t.bossApproved&&t.financeApproved)?`<button class="btn btn-or btn-sm" onclick="notifyOverrideRequest('${t.id}')">${t.status==='Pending Override'?'Resend override notice':'Notify for Override'}</button>`:''}
@@ -2524,6 +2926,7 @@ function renderReqDashboard() {
       ${p.dueDate?`<div><span class="due-tag ${ds}" style="font-size:10px;">${ds==='overdue'?'OVERDUE':'Due '+fmtDate(p.dueDate)}</span></div>`:''}
       <div style="font-weight:700;">${peso(total)}</div>
       <div><span class="badge badge-${p.status==='Pending'?'pending':p.status==='Approved'||p.status==='Received'?'completed':'overdue'}">${p.status}</span></div>
+      <button class="btn btn-ol btn-sm" onclick="showPOReceipt('${p.id}')">Print</button>
     </div>`;
   }).join('');
 }
@@ -2629,6 +3032,8 @@ function exportExpensesReport() {
 
 // ── INVENTORY ─────────────────────────────────────────────────
 function renderDashboard() {
+  renderInvOrdersDashWidget();
+  updateOrderNavBadges();
   const low=DB.inventory.filter(i=>(i.qty||0)<=(i.min||5));
   const ok=DB.inventory.filter(i=>(i.qty||0)>(i.min||5));
   const out=DB.inventory.filter(i=>(i.qty||0)===0);
@@ -2699,9 +3104,9 @@ function renderInventoryTable() {
       <td><div style="font-weight:600;font-size:12.5px;">${esc(i.name.split(':').pop())}</div><div class="item-source">${esc(categoryOf(i.name))}</div></td>
       <td style="font-size:12px;color:var(--soft);">${esc(i.unit)}</td>
       <td style="text-align:right;font-weight:600;">${peso(i.price||0)}</td>
-      <td style="text-align:right;font-weight:700;">${i.qty}</td>
+      <td style="text-align:right;font-weight:700;">${i.qty}${getReservedQty(i)>0?`<div style="font-size:10px;color:var(--or);font-weight:500;">${getReservedQty(i)} res</div>`:''}</td>
       <td style="text-align:right;color:${(i.expected||0)>0?'var(--bl)':'var(--faint)'};">${(i.expected||0)>0?`+${i.expected}`:'–'}</td>
-      <td style="text-align:right;font-weight:700;">${(i.qty||0)+(i.expected||0)}</td>
+      <td style="text-align:right;font-weight:700;color:var(--gn);">${getAvailableQty(i)+(i.expected||0)}</td>
       <td style="text-align:right;color:var(--faint);">${i.min||5}</td>
       <td><span class="badge badge-${s.cls}">${s.label}</span></td>
       <td style="font-size:11.5px;color:var(--faint);">${esc(i.brand||'–')}</td>
@@ -2715,14 +3120,14 @@ function si_updateInfo() {
   const name=document.getElementById('si-item')?.value;
   const item=findInventoryItem(name);
   const box=document.getElementById('si-current-info');
-  if(item&&box) { box.style.display='block'; box.innerHTML=`<strong>${esc(item.name.split(':').pop())}</strong> · Current stock: <strong>${item.qty} ${item.unit}</strong> · Min: ${item.min||5}`; }
+  if(item&&box) { box.style.display='block'; box.innerHTML=`<strong>${esc(item.name.split(':').pop())}</strong> · On hand: <strong>${item.qty} ${item.unit}</strong> · Reserved: ${getReservedQty(item)} · Available: <strong>${getAvailableQty(item)}</strong> · Min: ${item.min||5}`; }
   else if(box) box.style.display='none';
 }
 function so_updateInfo() {
   const name=document.getElementById('so-item')?.value;
   const item=findInventoryItem(name);
   const box=document.getElementById('so-current-info');
-  if(item&&box) { box.style.display='block'; box.innerHTML=`<strong>${esc(item.name.split(':').pop())}</strong> · Current stock: <strong style="color:${item.qty>0?'var(--gn)':'var(--rd)'};">${item.qty} ${item.unit}</strong>`; }
+  if(item&&box) { const av=getAvailableQty(item); box.style.display='block'; box.innerHTML=`<strong>${esc(item.name.split(':').pop())}</strong> · Available: <strong style="color:${av>0?'var(--gn)':'var(--rd)'};">${av} ${item.unit}</strong> (${getReservedQty(item)} reserved)`; }
   else if(box) box.style.display='none';
 }
 
@@ -2761,7 +3166,8 @@ function doStockOut() {
   if(!reason) { toast('Error: Please select a reason.'); return; }
   const item=findInventoryItem(name);
   if(!item) { toast('Error: Item not found.'); return; }
-  if((item.qty||0)<qty) { toast(`Error: Insufficient stock. Available: ${item.qty} ${item.unit}.`); return; }
+  const avail=getAvailableQty(item);
+  if(avail<qty) { toast(`Error: Insufficient available stock. Available: ${avail} ${item.unit} (${getReservedQty(item)} reserved).`); return; }
   item.qty-=qty;
   DB.inventory_log.unshift({id:uid(),dt:new Date(date+'T'+new Date().toTimeString().slice(0,8)).toISOString(),type:'out',itemName:item.name,project,qtyChange:-qty,balanceAfter:item.qty,remarks:`${reason}${project?'. Project: '+project:''}${remarks?'. '+remarks:''}`});
   saveDB(); updateInvPill(); renderDashboard(); so_updateInfo();
@@ -2778,8 +3184,8 @@ function renderLog() {
     const mp=!project||(l.project||'')===project||(l.remarks||'').toLowerCase().includes(project.toLowerCase());
     return mq&&mf&&mp;
   });
-  const typeLabels={in:'Stock In',out:'Stock Out',ticket:'Ticket',adjust:'Adjustment',po:'PO Created',approve:'PO Approved',receive:'Received',action:'Action'};
-  const typeColors={in:'var(--gn)',out:'var(--rd)',ticket:'var(--bl)',adjust:'var(--or)',po:'var(--soft)',approve:'var(--mg)',receive:'var(--gn)',action:'var(--faint)'};
+  const typeLabels={in:'Stock In',out:'Stock Out',ticket:'Ticket',reserve:'Reservation',release:'Site Release',adjust:'Adjustment',po:'PO Created',approve:'PO Approved',receive:'Received',action:'Action'};
+  const typeColors={in:'var(--gn)',out:'var(--rd)',ticket:'var(--bl)',reserve:'var(--or)',release:'var(--mg)',adjust:'var(--or)',po:'var(--soft)',approve:'var(--mg)',receive:'var(--gn)',action:'var(--faint)'};
   const tbody=document.getElementById('log-tbody'); if(!tbody) return;
   tbody.innerHTML=!filtered.length?'<tr><td colspan="7" class="empty-state">No log entries found.</td></tr>':
     filtered.map(l=>{const qc=l.qtyChange||0;return `<tr>
@@ -2805,6 +3211,291 @@ function exportLogToExcel() {
 function clearLog() {
   if(!confirm('Clear ALL movement log entries?')) return;
   DB.inventory_log=[]; saveDB(); renderLog(); toast('Log cleared.','ok');
+}
+
+// ── RELEASE MONITORING ────────────────────────────────────────
+let _relDetailId=null, _relAddItemRows=[];
+
+function monitorStatusLabel(st) {
+  return {ongoing:'Ongoing',partial:'Partial Release',completed:'Released All'}[st]||st;
+}
+
+function renderReleaseMonitor() {
+  const q=(document.getElementById('rel-search')?.value||'').toLowerCase();
+  const f=document.getElementById('rel-filter')?.value||'all';
+  const list=document.getElementById('rel-monitor-list');
+  if(!list) return;
+  const monitors=(DB.release_monitors||[]).filter(m=>{
+    const mq=!q||(m.projectName||'').toLowerCase().includes(q)||(m.orderRef||'').toLowerCase().includes(q)||(m.pm||'').toLowerCase().includes(q);
+    const mf=f==='all'||m.status===f;
+    return mq&&mf;
+  });
+  list.innerHTML=!monitors.length?'<div class="empty-state">No projects being monitored.</div>':`
+    <table style="width:100%;border-collapse:collapse;">
+      <thead><tr>
+        <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Project</th>
+        <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Order Ref</th>
+        <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">PM</th>
+        <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:center;">Items</th>
+        <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Status</th>
+      </tr></thead>
+      <tbody>${monitors.map(m=>{
+        const items=getReleaseItemsForMonitor(m.id);
+        return `<tr class="rel-row" onclick="showReleaseDetail('${m.id}')">
+          <td style="padding:12px 14px;font-weight:600;">${esc(m.projectName)}</td>
+          <td style="padding:12px 14px;font-size:12px;color:var(--soft);">${esc(m.orderRef||'–')}</td>
+          <td style="padding:12px 14px;font-size:12px;">${esc(m.pm||'–')}</td>
+          <td style="padding:12px 14px;text-align:center;">${items.length}</td>
+          <td style="padding:12px 14px;"><span class="badge badge-${m.status}">${monitorStatusLabel(m.status)}</span></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+  if(_relDetailId) showReleaseDetail(_relDetailId);
+}
+
+function showReleaseDetail(monitorId) {
+  _relDetailId=monitorId;
+  const m=DB.release_monitors?.find(x=>x.id===monitorId);
+  const el=document.getElementById('rel-monitor-detail');
+  if(!m||!el) return;
+  el.style.display='block';
+  const items=getReleaseItemsForMonitor(monitorId);
+  el.innerHTML=`<div style="padding:18px 20px;background:var(--paper);">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
+      <div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:800;color:var(--mg);">${esc(m.projectName)}</div>
+      <span class="badge badge-${m.status}">${monitorStatusLabel(m.status)}</span>
+      <button class="btn btn-ol btn-sm" style="margin-left:auto;" onclick="event.stopPropagation();_relDetailId=null;document.getElementById('rel-monitor-detail').style.display='none';">Close</button>
+    </div>
+    <div style="font-size:12px;color:var(--soft);margin-bottom:14px;line-height:1.6;">
+      ${m.orderRef?`Order: <strong>${esc(m.orderRef)}</strong> · `:''}PM: ${esc(m.pm||'–')} · Site: ${esc(m.siteLocation||'–')}
+      ${m.remarks?`<br>${esc(m.remarks)}`:''}
+    </div>
+    <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:var(--r);overflow:hidden;">
+      <thead><tr>
+        <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;padding:10px 14px;">Item</th>
+        <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;padding:10px 14px;text-align:center;">Reserved</th>
+        <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;padding:10px 14px;text-align:center;">Released</th>
+        <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;padding:10px 14px;">Status</th>
+        <th style="background:#fafafa;border-bottom:2px solid var(--bd);padding:10px 14px;"></th>
+      </tr></thead>
+      <tbody>${items.map(i=>`<tr>
+        <td style="padding:10px 14px;font-weight:600;font-size:12.5px;">${esc(i.itemName.split(':').pop())}</td>
+        <td style="padding:10px 14px;text-align:center;">${i.reservedQty} ${esc(i.unit)}</td>
+        <td style="padding:10px 14px;text-align:center;font-weight:700;color:var(--gn);">${i.releasedQty||0}</td>
+        <td style="padding:10px 14px;">
+          <select class="fc" style="padding:6px 8px;font-size:12px;min-width:140px;" onchange="updateReleaseItemStatus('${i.id}',this.value)">
+            <option value="Reserved" ${i.status==='Reserved'?'selected':''}>Reserved</option>
+            <option value="Partially Released" ${i.status==='Partially Released'?'selected':''}>Partially Released</option>
+            <option value="Released All" ${i.status==='Released All'?'selected':''}>Released All</option>
+          </select>
+        </td>
+        <td style="padding:10px 14px;"><button class="btn btn-ol btn-sm" onclick="event.stopPropagation();removeReleaseItem('${i.id}')">Remove</button></td>
+      </tr>`).join('')}</tbody>
+    </table>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-ol btn-sm" onclick="relAddItemToMonitor('${m.id}')">+ Add Item</button>
+      ${m.status==='completed'?`<button class="btn btn-gn btn-sm" onclick="finalizeMonitorRelease('${m.id}')">✓ Finalize to Movement Log</button>`:''}
+    </div>
+  </div>`;
+}
+
+function updateReleaseItemStatus(itemId, newStatus) {
+  const item=DB.release_items?.find(i=>i.id===itemId);
+  if(!item) return;
+  const prevReleased=item.releasedQty||0;
+  if(newStatus==='Reserved') item.releasedQty=0;
+  else if(newStatus==='Released All') item.releasedQty=item.reservedQty||0;
+  else if(newStatus==='Partially Released'&&prevReleased<=0) item.releasedQty=Math.max(1,Math.floor((item.reservedQty||0)/2));
+  item.status=newStatus;
+  const mon=DB.release_monitors?.find(m=>m.id===item.monitorId);
+  if(mon) mon.status=computeMonitorStatus(mon.id);
+  saveDB(); renderReleaseMonitor();
+  toast('Item status updated.','ok');
+}
+
+function removeReleaseItem(itemId) {
+  const item=DB.release_items?.find(i=>i.id===itemId);
+  if(!item||!confirm('Remove this item? Unreleased quantity returns to available stock.')) return;
+  const mon=DB.release_monitors?.find(m=>m.id===item.monitorId);
+  restoreReleaseItemReservation(item,mon?.projectName||'');
+  DB.release_items=DB.release_items.filter(i=>i.id!==itemId);
+  if(mon) mon.status=computeMonitorStatus(mon.id);
+  saveDB(); updateInvPill(); renderReleaseMonitor(); renderInventoryTable();
+  toast('Item removed — stock restored.','ok');
+}
+
+function finalizeMonitorRelease(monitorId) {
+  const m=DB.release_monitors?.find(x=>x.id===monitorId);
+  if(!m) return;
+  getReleaseItemsForMonitor(monitorId).forEach(i=>{
+    if(i.releasedQty>0) {
+      DB.inventory_log.unshift({id:uid(),dt:nowISO(),type:'release',itemName:i.itemName,project:m.projectName,qtyChange:-(i.releasedQty||0),balanceAfter:findInventoryItem(i.itemName)?.qty??0,remarks:`${m.orderRef||m.projectName} finalized · ${i.releasedQty} ${i.unit} released to site`});
+    }
+  });
+  saveDB(); renderLog(); toast('Release transaction saved to Movement Log.','ok');
+}
+
+let _relAddToMonitorId=null;
+function relAddItemToMonitor(monitorId) {
+  _relAddToMonitorId=monitorId;
+  openAddReleaseMonitor(true);
+  const sel=document.getElementById('rel-add-project');
+  const m=DB.release_monitors?.find(x=>x.id===monitorId);
+  if(sel&&m) sel.value=m.projectId;
+  relAddProjectChanged();
+  ['rel-add-pm','rel-add-site','rel-add-order','rel-add-remarks'].forEach((id,idx)=>{
+    const el=document.getElementById(id);
+    if(!el||!m) return;
+    if(id==='rel-add-pm') el.value=m.pm||'';
+    if(id==='rel-add-site') el.value=m.siteLocation||'';
+    if(id==='rel-add-order') el.value=m.orderRef||'';
+    if(id==='rel-add-remarks') el.value=m.remarks||'';
+  });
+}
+
+function openAddReleaseMonitor(keepMonitorId) {
+  if(!keepMonitorId) _relAddToMonitorId=null;
+  _relAddItemRows=[];
+  const sel=document.getElementById('rel-add-project');
+  if(sel) sel.innerHTML=DB.projects.filter(p=>p.status==='Active').map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  relAddProjectChanged();
+  document.getElementById('rel-add-items').innerHTML='';
+  relAddItemRow();
+  openMo('mo-add-release');
+}
+
+function relAddProjectChanged() {
+  const pid=document.getElementById('rel-add-project')?.value;
+  const p=DB.projects.find(x=>x.id===pid);
+  const pm=document.getElementById('rel-add-pm');
+  if(pm&&p&&!pm.value) pm.placeholder=p.client||'';
+}
+
+function relAddItemRow() {
+  const id=uid(); _relAddItemRows.push(id);
+  const wrap=document.getElementById('rel-add-items');
+  const div=document.createElement('div');
+  div.className='mat-row'; div.id='rel-item-'+id;
+  div.innerHTML=`
+    <datalist id="reldl-${id}">${DB.inventory.map(i=>`<option value="${esc(i.name)}">`).join('')}</datalist>
+    <div style="flex:3;min-width:160px;"><div class="form-lbl">Item</div><input class="fc" list="reldl-${id}" id="reln-${id}" placeholder="Search inventory…"></div>
+    <div style="flex:1;min-width:70px;"><div class="form-lbl">Qty</div><input class="fc" id="relq-${id}" type="number" min="1" placeholder="0"></div>
+    <div style="flex:1;min-width:60px;"><div class="form-lbl">Unit</div><input class="fc" id="relu-${id}" placeholder="PCS"></div>
+    <div style="padding-bottom:14px;"><button class="btn btn-ol btn-sm" onclick="document.getElementById('rel-item-${id}')?.remove();_relAddItemRows=_relAddItemRows.filter(x=>x!=='${id}')">✕</button></div>`;
+  wrap.appendChild(div);
+}
+
+function saveReleaseMonitor() {
+  const projectId=document.getElementById('rel-add-project')?.value;
+  const pm=document.getElementById('rel-add-pm')?.value.trim();
+  const site=document.getElementById('rel-add-site')?.value.trim();
+  const orderRef=document.getElementById('rel-add-order')?.value.trim();
+  const remarks=document.getElementById('rel-add-remarks')?.value.trim();
+  const proj=DB.projects.find(p=>p.id===projectId);
+  if(!proj) { toast('Error: Select a project.'); return; }
+  let mon=_relAddToMonitorId?DB.release_monitors?.find(m=>m.id===_relAddToMonitorId):null;
+  if(!mon) {
+    mon={id:uid(),projectId,projectName:proj.name,ticketId:null,orderRef:orderRef||null,pm,siteLocation:site,remarks,status:'ongoing',createdAt:nowISO(),createdBy:_currentUser?.name||'Inventory'};
+    DB.release_monitors.unshift(mon);
+  }
+  let added=0;
+  for(const id of _relAddItemRows) {
+    const name=document.getElementById('reln-'+id)?.value.trim();
+    const qty=parseInt(document.getElementById('relq-'+id)?.value)||0;
+    let unit=document.getElementById('relu-'+id)?.value.trim();
+    if(!name||qty<=0) continue;
+    const inv=findInventoryItem(name);
+    if(!inv) { toast(`Error: ${name} not in inventory.`); return; }
+    if(!unit) unit=inv.unit;
+    const avail=getAvailableQty(inv);
+    const reserveQty=Math.min(qty,avail);
+    if(reserveQty<=0) { toast(`Error: No available stock for ${name.split(':').pop()}.`); continue; }
+    inv.reserved=(inv.reserved||0)+reserveQty;
+    DB.inventory_log.unshift({id:uid(),dt:nowISO(),type:'reserve',itemName:inv.name,project:proj.name,qtyChange:-reserveQty,balanceAfter:getAvailableQty(inv),remarks:`Manual reserve · ${proj.name} (${reserveQty} ${unit})`});
+    DB.release_items.push({id:uid(),monitorId:mon.id,ticketId:null,itemName:inv.name,inventoryId:inv.id,reservedQty:reserveQty,releasedQty:0,unit,status:'Reserved',createdAt:nowISO()});
+    added++;
+  }
+  if(!added&&!_relAddToMonitorId) { toast('Error: Add at least one item with available stock.'); return; }
+  mon.status=computeMonitorStatus(mon.id);
+  _relAddToMonitorId=null;
+  saveDB(); updateInvPill(); closeMo('mo-add-release'); renderReleaseMonitor();
+  toast(added?`Project saved — ${added} item(s) reserved.`:'Project updated.','ok');
+}
+
+// ── PULL-OUT MONITORING ───────────────────────────────────────
+function getReleasedItemsForPullout() {
+  return (DB.release_items||[]).filter(i=>(i.releasedQty||0)>0);
+}
+
+function renderPulloutMonitor() {
+  const q=(document.getElementById('pull-search')?.value||'').toLowerCase();
+  const f=document.getElementById('pull-filter')?.value||'all';
+  const records=(DB.pullout_records||[]).filter(r=>{
+    const mq=!q||(r.itemName||'').toLowerCase().includes(q)||(r.projectName||'').toLowerCase().includes(q)||(r.pulledBy||'').toLowerCase().includes(q);
+    const mf=f==='all'||(f==='out'&&!r.returned)||(f==='returned'&&r.returned);
+    return mq&&mf;
+  });
+  const tbody=document.getElementById('pullout-tbody');
+  if(!tbody) return;
+  tbody.innerHTML=!records.length?'<tr><td colspan="7" class="empty-state">No pull-out records.</td></tr>':
+    records.map(r=>`<tr>
+      <td style="font-size:11.5px;color:var(--faint);white-space:nowrap;">${fmtDate(r.pulloutDate?.split('T')[0])}</td>
+      <td style="font-weight:500;font-size:12px;">${esc(r.projectName)}</td>
+      <td style="font-size:12px;">${esc((r.itemName||'').split(':').pop())}</td>
+      <td style="text-align:right;font-weight:700;">${r.qty}</td>
+      <td style="font-size:12px;">${esc(r.pulledBy)}</td>
+      <td><span class="badge badge-${r.returned?'completed':'urgent'}">${r.returned?'Returned':'Unreturned'}</span></td>
+      <td>${!r.returned?`<button class="btn btn-gn btn-sm" onclick="markPulloutReturned('${r.id}')">Mark Returned</button>`:`<span style="font-size:11px;color:var(--faint);">${fmtDate(r.returnDate?.split('T')[0])}</span>`}</td>
+    </tr>`).join('');
+  const cnt=document.getElementById('pullout-count');
+  const unreturned=records.filter(r=>!r.returned).length;
+  if(cnt) cnt.textContent=`${records.length} record(s) · ${unreturned} still out`;
+}
+
+function openPulloutModal() {
+  const sel=document.getElementById('pull-ref-item');
+  const released=getReleasedItemsForPullout();
+  if(sel) sel.innerHTML=released.length?released.map(i=>{
+    const mon=DB.release_monitors?.find(m=>m.id===i.monitorId);
+    const pulled=(DB.pullout_records||[]).filter(p=>p.releaseItemId===i.id&&!p.returned).reduce((s,p)=>s+(p.qty||0),0);
+    const avail=(i.releasedQty||0)-pulled;
+    if(avail<=0) return '';
+    return `<option value="${i.id}">${esc((i.itemName||'').split(':').pop())} · ${mon?.projectName||'–'} · ${avail} avail</option>`;
+  }).join(''):'<option value="">No released items available</option>';
+  document.getElementById('pull-date').value=today();
+  document.getElementById('pull-by').value=_currentUser?.name||'';
+  document.getElementById('pull-qty').value='1';
+  document.getElementById('pull-remarks').value='';
+  openMo('mo-pullout');
+}
+
+function savePullout() {
+  const itemId=document.getElementById('pull-ref-item')?.value;
+  const qty=parseInt(document.getElementById('pull-qty')?.value)||0;
+  const date=document.getElementById('pull-date')?.value||today();
+  const pulledBy=document.getElementById('pull-by')?.value.trim();
+  const remarks=document.getElementById('pull-remarks')?.value.trim();
+  const ri=DB.release_items?.find(i=>i.id===itemId);
+  if(!ri||qty<=0||!pulledBy) { toast('Error: Select item, quantity, and person.'); return; }
+  const mon=DB.release_monitors?.find(m=>m.id===ri.monitorId);
+  const pulled=(DB.pullout_records||[]).filter(p=>p.releaseItemId===ri.id&&!p.returned).reduce((s,p)=>s+(p.qty||0),0);
+  const avail=(ri.releasedQty||0)-pulled;
+  if(qty>avail) { toast(`Error: Only ${avail} available for pull-out.`); return; }
+  DB.pullout_records=DB.pullout_records||[];
+  DB.pullout_records.unshift({id:uid(),releaseItemId:ri.id,monitorId:ri.monitorId,itemName:ri.itemName,projectName:mon?.projectName||'',qty,pulloutDate:date+'T12:00:00',pulledBy,returned:false,returnDate:null,remarks});
+  DB.inventory_log.unshift({id:uid(),dt:nowISO(),type:'out',itemName:ri.itemName,project:mon?.projectName||'',qtyChange:-qty,balanceAfter:findInventoryItem(ri.itemName)?.qty??0,remarks:`Pull-out · ${pulledBy}${remarks?'. '+remarks:''}`});
+  saveDB(); closeMo('mo-pullout'); renderPulloutMonitor(); renderLog();
+  toast('Pull-out recorded.','ok');
+}
+
+function markPulloutReturned(recordId) {
+  const r=DB.pullout_records?.find(x=>x.id===recordId);
+  if(!r) return;
+  r.returned=true;
+  r.returnDate=today()+'T12:00:00';
+  DB.inventory_log.unshift({id:uid(),dt:nowISO(),type:'in',itemName:r.itemName,project:r.projectName,qtyChange:r.qty,balanceAfter:findInventoryItem(r.itemName)?.qty??0,remarks:`Returned · ${r.pulledBy}${r.remarks?'. '+r.remarks:''}`});
+  saveDB(); renderPulloutMonitor(); renderLog();
+  toast('Marked as returned.','ok');
 }
 
 function exportCSV() {
@@ -2859,7 +3550,7 @@ function saveNewItem() {
   const min=parseInt(document.getElementById('add-min').value)||5;
   const brand=document.getElementById('add-brand').value.trim();
   if(!name||!unit) { toast('Error: Item name and unit are required.'); return; }
-  const item={id:uid(),name,price,qty,unit,min,brand,expected:0};
+  const item={id:uid(),name,price,qty,reserved:0,unit,min,brand,expected:0};
   DB.inventory.push(item); saveDB(); buildDatalist(); renderInventoryTable(); renderDashboard(); updateInvPill();
   closeMo('mo-add-item'); toast('Item added.','ok');
 }
@@ -2869,7 +3560,7 @@ let activeBillingId=null, editingInvoiceId=null;
 
 function buildBillingGateDashboardHTML() {
   const blocked=DB.tickets.filter(t=>{
-    if(t.status!=='Pending Override'&&t.status!=='Pending') return false;
+    if(!['Pending Inventory','At PO','Pending Override','Partial'].includes(t.status)) return false;
     return !ticketHasPaidBilling(t.projectId)&&!(t.bossApproved&&t.financeApproved);
   }).slice(0,8);
   if(!blocked.length) {
@@ -3424,6 +4115,33 @@ function deleteExpense() {
   saveDB(); expRenderList(); closeMo('mo-add-expense'); toast('Expense deleted.','ok');
 }
 
+function expGoPage(tab, btn) {
+  document.querySelectorAll('#page-acc-expenses .exp-sub-btn').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  const list = document.getElementById('exp-page-list');
+  const report = document.getElementById('exp-page-report');
+  if(tab === 'report') {
+    if(list) list.style.display='none';
+    if(report) { report.style.display='block'; renderExpSummaryReport(); }
+  } else {
+    if(list) list.style.display='block';
+    if(report) report.style.display='none';
+    expRenderList();
+  }
+}
+
+function renderExpSummaryReport() {
+  const el = document.getElementById('exp-page-report');
+  if(!el) return;
+  const total = DB.expenses.reduce((s,e)=>s+(parseFloat(e.amount)||0),0);
+  el.innerHTML = `
+    <div class="card" style="padding:24px;">
+      <div class="stat-lbl">Grand Total (General Expenses)</div>
+      <div class="stat-val" style="color:var(--mg);">${peso(total)}</div>
+      <div style="margin-top:14px;font-size:12px;color:var(--soft);">This summary includes all logged general expenses. For project-specific material costs, visit the <strong>Expenses per Project</strong> report.</div>
+    </div>`;
+}
+
 // ── OVERRIDE QUEUE (Boss / Finance) ───────────────────────────
 let _overrideRejectRole = 'boss';
 
@@ -3664,7 +4382,7 @@ function renderActivityLog() {
   const invLogs=(DB.inventory_log||[]).map(l=>{
     let user='System';
     const m=(l.remarks||'').match(/\(([^)]+)\)/); if(m) user=m[1];
-    const actionMap={in:'Stock In',out:'Stock Out',ticket:'Ticket',adjust:'Adjustment',po:'PO Created',approve:'PO Approved',receive:'PO Received',action:'Action'};
+    const actionMap={in:'Stock In',out:'Stock Out',ticket:'Ticket',reserve:'Reservation',release:'Site Release',adjust:'Adjustment',po:'PO Created',approve:'PO Approved',receive:'PO Received',action:'Action'};
     return {id:l.id||uid(),dt:l.dt||nowISO(),user,action:actionMap[l.type]||l.type,entity:l.itemName||'',details:l.remarks||'',status:'success'};
   });
   const combined=[...(DB.system_logs||[]),...invLogs].sort((a,b)=>new Date(b.dt)-new Date(a.dt));
@@ -3689,5 +4407,3 @@ function renderActivityLog() {
 // ── BOOT ──────────────────────────────────────────────────────
 if(document.readyState==='loading') { document.addEventListener('DOMContentLoaded',buildDatalist); }
 else { buildDatalist(); }
-
-
