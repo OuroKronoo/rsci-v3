@@ -295,38 +295,98 @@
       </div>
     </div>
 
-    <!-- PO OFFICER DASHBOARD -->
+    <!-- PO OFFICER DASHBOARD — 5-cell pipeline -->
     <div class="page" id="page-po-dashboard">
-      <div class="sec-hdr">
-        <div class="sec-title">PO Officer Dashboard</div>
-        <button class="btn btn-mg btn-sm" onclick="navigate('po-new-po')">+ Create P.O.</button>
-      </div>
-      <div class="stat-row">
-        <div class="stat-card bl"><div class="stat-lbl">My POs (Total)</div><div class="stat-val" id="po-stat-total">–</div></div>
-        <div class="stat-card or"><div class="stat-lbl">Pending Approval</div><div class="stat-val" id="po-stat-pending">–</div></div>
-        <div class="stat-card gn"><div class="stat-lbl">Approved</div><div class="stat-val" id="po-stat-approved">–</div></div>
-        <div class="stat-card"><div class="stat-lbl">Received</div><div class="stat-val" id="po-stat-received">–</div></div>
-      </div>
-      <div class="sec-hdr" style="margin-top:18px;">
-        <div class="sec-title" style="font-size:13px;">Purchase Shortages (after inventory review)</div>
-        <span class="badge badge-at-po" id="po-req-cnt">–</span>
-      </div>
-      <div style="font-size:11.5px;color:var(--faint);margin:-10px 0 12px;">Only orders that still need buying appear here — Inventory Manager must release warehouse stock first.</div>
-      <div id="po-req-list"></div>
-      <div class="sec-hdr" style="margin-top:18px;">
-        <div class="sec-title" style="font-size:13px;">All Purchase Orders</div>
-        <div style="display:flex;gap:8px;">
-          <input class="search-inp" type="text" id="po-dash-search" placeholder="Search PO #, vendor..." oninput="renderPODashboard()" style="min-width:200px;">
-          <select class="filter-sel" id="po-dash-filter" onchange="renderPODashboard()">
-            <option value="all">All Status</option>
-            <option value="Pending">Pending</option>
-            <option value="Approved">Approved</option>
-            <option value="Received">Received</option>
-            <option value="Cancelled">Cancelled</option>
-          </select>
+      <div class="sec-hdr" style="margin-bottom:6px;">
+        <div>
+          <div class="sec-title">Purchase Order Pipeline</div>
+          <div style="font-size:11.5px;color:var(--faint);margin-top:2px;">Track every order from engineer request to final delivery</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input class="search-inp" type="text" id="po-pipe-search" placeholder="Search orders, PO#, vendor…" oninput="renderPOPipeline()" style="min-width:200px;">
+          <button class="btn btn-mg btn-sm" onclick="navigate('po-new-po')">+ Create P.O.</button>
         </div>
       </div>
-      <div id="po-dash-list"></div>
+
+      <!-- 5-cell pipeline board -->
+      <div class="po-pipeline-board" id="po-pipeline-board">
+
+        <!-- Cell 1: Notify -->
+        <div class="pipe-cell" id="pipe-notify">
+          <div class="pipe-cell-head" style="background:linear-gradient(135deg,#6d28d9,#7c3aed);">
+            <div class="pipe-cell-icon">🔔</div>
+            <div>
+              <div class="pipe-cell-title">Notify</div>
+              <div class="pipe-cell-sub">Engineer orders awaiting PO</div>
+            </div>
+            <span class="pipe-count" id="cnt-notify">0</span>
+          </div>
+          <div class="pipe-cell-body" id="list-notify">
+            <div class="pipe-empty">No pending orders</div>
+          </div>
+        </div>
+
+        <!-- Cell 2: Generated P.O. -->
+        <div class="pipe-cell" id="pipe-generated">
+          <div class="pipe-cell-head" style="background:linear-gradient(135deg,#b5006e,#c2185b);">
+            <div class="pipe-cell-icon">📝</div>
+            <div>
+              <div class="pipe-cell-title">Generated P.O.</div>
+              <div class="pipe-cell-sub">POs created, pending review</div>
+            </div>
+            <span class="pipe-count" id="cnt-generated">0</span>
+          </div>
+          <div class="pipe-cell-body" id="list-generated">
+            <div class="pipe-empty">No generated POs</div>
+          </div>
+        </div>
+
+        <!-- Cell 3: Approved P.O. -->
+        <div class="pipe-cell" id="pipe-approved">
+          <div class="pipe-cell-head" style="background:linear-gradient(135deg,#1565c0,#1976d2);">
+            <div class="pipe-cell-icon">✅</div>
+            <div>
+              <div class="pipe-cell-title">Approved P.O.</div>
+              <div class="pipe-cell-sub">Boss / Ops Manager validated</div>
+            </div>
+            <span class="pipe-count" id="cnt-approved">0</span>
+          </div>
+          <div class="pipe-cell-body" id="list-approved">
+            <div class="pipe-empty">No approved POs</div>
+          </div>
+        </div>
+
+        <!-- Cell 4: For Payment -->
+        <div class="pipe-cell" id="pipe-payment">
+          <div class="pipe-cell-head" style="background:linear-gradient(135deg,#e8700a,#f57c00);">
+            <div class="pipe-cell-icon">💳</div>
+            <div>
+              <div class="pipe-cell-title">For Payment</div>
+              <div class="pipe-cell-sub">Accountant confirms deposit</div>
+            </div>
+            <span class="pipe-count" id="cnt-payment">0</span>
+          </div>
+          <div class="pipe-cell-body" id="list-payment">
+            <div class="pipe-empty">No items awaiting payment</div>
+          </div>
+        </div>
+
+        <!-- Cell 5: Pick Up / Deliver -->
+        <div class="pipe-cell" id="pipe-pickup">
+          <div class="pipe-cell-head" style="background:linear-gradient(135deg,#1e8c1e,#2e7d32);">
+            <div class="pipe-cell-icon">🚚</div>
+            <div>
+              <div class="pipe-cell-title">Pick Up / Deliver</div>
+              <div class="pipe-cell-sub">Final — materials en route</div>
+            </div>
+            <span class="pipe-count" id="cnt-pickup">0</span>
+          </div>
+          <div class="pipe-cell-body" id="list-pickup">
+            <div class="pipe-empty">No active deliveries</div>
+          </div>
+        </div>
+
+      </div><!-- /po-pipeline-board -->
     </div>
 
     <!-- PO OFFICER CREATE PO -->
@@ -1230,6 +1290,18 @@
       <button class="btn btn-ol" onclick="closeMo('mo-pullout')">Cancel</button>
       <button class="btn btn-mg" onclick="savePullout()">Record Pull-Out</button>
     </div>
+  </div>
+</div>
+
+<!-- PO Pipeline Detail Modal -->
+<div class="pipe-mo" id="pipe-mo" onclick="if(event.target===this)closePipeMo()">
+  <div class="pipe-mo-box">
+    <div class="pipe-mo-head">
+      <div class="pipe-mo-title" id="pipe-mo-title">Order Details</div>
+      <button class="mo-x" onclick="closePipeMo()">✕</button>
+    </div>
+    <div class="pipe-mo-body" id="pipe-mo-body"></div>
+    <div class="pipe-mo-foot" id="pipe-mo-foot"></div>
   </div>
 </div>
 

@@ -2833,83 +2833,238 @@ function showPOReceipt(id) {
   el.onload=()=>{ try{el.contentWindow.focus();el.contentWindow.print();}catch(e){ toast('PO saved. Allow pop-ups to print, or open PO from inbox and approve to print again.','warn'); } };
 }
 
-// ── PO OFFICER DASHBOARD ──────────────────────────────────────
-function renderPODashboard() {
-  const total=DB.purchase_orders.length;
-  const pend=DB.purchase_orders.filter(p=>p.status==='Pending').length;
-  const appr=DB.purchase_orders.filter(p=>p.status==='Approved').length;
-  const recv=DB.purchase_orders.filter(p=>p.status==='Received').length;
-  const requests=getTicketsForPOOfficer();
-  const stEl=id=>document.getElementById(id);
-  if(stEl('po-stat-total')) stEl('po-stat-total').textContent=total;
-  if(stEl('po-stat-pending')) stEl('po-stat-pending').textContent=pend;
-  if(stEl('po-stat-approved')) stEl('po-stat-approved').textContent=appr;
-  if(stEl('po-stat-received')) stEl('po-stat-received').textContent=recv;
-  if(stEl('po-req-cnt')) stEl('po-req-cnt').textContent=requests.length;
+// ── PO OFFICER PIPELINE DASHBOARD ────────────────────────────
+function renderPODashboard() { renderPOPipeline(); }
+
+function renderPOPipeline() {
+  const q=(document.getElementById('po-pipe-search')?.value||'').toLowerCase();
   updateOrderNavBadges();
 
-  const reqEl=document.getElementById('po-req-list');
-  if(reqEl) {
-    reqEl.innerHTML=!requests.length
-      ? '<div class="empty-state"><div class="empty-icon">📋</div>No purchase shortages yet.<br><span style="font-size:11.5px;">Orders appear here after Inventory Manager releases warehouse stock.</span></div>'
-      : `<div class="dash-grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;">
-          ${requests.slice(0,6).map(t=>{
-            const shortages=t.materials.filter(m=>(m.remainingQty||0)>0).map(m=>`${m.name.split(':').pop()} ×${m.remainingQty}`).join(', ');
-            const gate=getBillingGateStatus(t.projectId);
-            const gateLbl=t.status==='Pending Override'
-              ?'<span class="badge badge-pending-override" style="font-size:9px;">Override</span>'
-              :gate.passed
-                ?'<span class="badge badge-ok" style="font-size:9px;">Billing OK</span>'
-                :'<span class="badge badge-unpaid" style="font-size:9px;">No paid inv.</span>';
-            return `<div class="dash-widget" style="margin:0;">
-              <div class="dash-widget-head">
-                <div class="dash-widget-title" style="color:var(--mg);font-size:12px;">${esc(t.no)}</div>
-                <span class="badge badge-at-po" style="font-size:9px;">At PO</span>
-                ${gateLbl}
-                ${t.urgent?'<span class="badge badge-urgent" style="font-size:9px;">URGENT</span>':''}
-              </div>
-              <div class="dash-widget-body" style="padding:12px 14px;">
-                <div style="font-size:12px;font-weight:700;margin-bottom:4px;">${esc(t.project)}</div>
-                <div style="font-size:11px;color:var(--soft);margin-bottom:8px;">${esc(t.siteLocation||'No site location noted')}</div>
-                <div style="font-size:11px;color:var(--faint);line-height:1.6;">Engineer: ${esc(t.engineerName||t.submittedBy||'–')}<br>Inventory reviewed: ${fmtDate((t.inventoryReviewedAt||'').split('T')[0])}<br><strong style="color:var(--or);">Still need:</strong> ${esc(shortages||'–')}</div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
-                  <button class="btn btn-ol btn-sm" onclick="viewTicketDetail('${t.id}')">Review</button>
-                  ${!gate.passed&&!(t.bossApproved&&t.financeApproved)?`<button class="btn btn-or btn-sm" onclick="notifyOverrideRequest('${t.id}')">${t.status==='Pending Override'?'Resend override notice':'Notify for Override'}</button>`:''}
-                  <button class="btn btn-mg btn-sm" onclick="convertTicketToPO('${t.id}')">Create PO</button>
-                </div>
-              </div>
-            </div>`;
-          }).join('')}
-        </div>`;
+  // ── CELL 1: NOTIFY — tickets at PO stage (not yet converted) ──
+  const notifyTickets = getTicketsForPOOfficer().filter(t=>{
+    if(q) return t.no.toLowerCase().includes(q)||t.project.toLowerCase().includes(q);
+    return true;
+  });
+  renderPipeCell('list-notify','cnt-notify', notifyTickets, 'notify');
+
+  // ── CELL 2: GENERATED P.O. — Pending approval by accountant / boss ──
+  const genPOs = DB.purchase_orders.filter(p=>{
+    if(p.status!=='Pending') return false;
+    if(q) return p.no.toLowerCase().includes(q)||(p.vendor||'').toLowerCase().includes(q)||(p.project||'').toLowerCase().includes(q);
+    return true;
+  });
+  renderPipeCell('list-generated','cnt-generated', genPOs, 'generated');
+
+  // ── CELL 3: APPROVED P.O. — Approved, not yet marked for payment ──
+  const approvedPOs = DB.purchase_orders.filter(p=>{
+    if(p.status!=='Approved') return false;
+    if(p.paymentConfirmedAt) return false; // already moved to payment cell
+    if(q) return p.no.toLowerCase().includes(q)||(p.vendor||'').toLowerCase().includes(q)||(p.project||'').toLowerCase().includes(q);
+    return true;
+  });
+  renderPipeCell('list-approved','cnt-approved', approvedPOs, 'approved');
+
+  // ── CELL 4: FOR PAYMENT — Approved POs awaiting deposit confirm ──
+  // We use paymentConfirmedAt flag (set by accountant on PO) OR show all Approved with note
+  const paymentPOs = DB.purchase_orders.filter(p=>{
+    if(p.status!=='Approved') return false;
+    if(!p.paymentConfirmedAt) return false;
+    if(q) return p.no.toLowerCase().includes(q)||(p.vendor||'').toLowerCase().includes(q)||(p.project||'').toLowerCase().includes(q);
+    return true;
+  });
+  // Fallback: show all Approved when nothing is confirmed yet so PO officer can track
+  const paymentFallback = paymentPOs.length===0 && !q
+    ? DB.purchase_orders.filter(p=>p.status==='Approved')
+    : paymentPOs;
+  renderPipeCell('list-payment','cnt-payment', paymentFallback, 'payment');
+
+  // ── CELL 5: PICK UP / DELIVER — Received POs ──
+  const deliveredPOs = DB.purchase_orders.filter(p=>{
+    if(p.status!=='Received') return false;
+    if(q) return p.no.toLowerCase().includes(q)||(p.vendor||'').toLowerCase().includes(q)||(p.project||'').toLowerCase().includes(q);
+    return true;
+  });
+  renderPipeCell('list-pickup','cnt-pickup', deliveredPOs, 'pickup');
+}
+
+function renderPipeCell(listId, cntId, items, cellType) {
+  const listEl = document.getElementById(listId);
+  const cntEl  = document.getElementById(cntId);
+  if(!listEl) return;
+  if(cntEl) cntEl.textContent = items.length;
+
+  if(!items.length) {
+    listEl.innerHTML = '<div class="pipe-empty">Nothing here yet</div>';
+    return;
   }
 
-  const q=(document.getElementById('po-dash-search')?.value||'').toLowerCase();
-  const f=document.getElementById('po-dash-filter')?.value||'all';
-  const filtered=DB.purchase_orders.filter(p=>{
-    const mq=!q||p.no.toLowerCase().includes(q)||(p.vendor||'').toLowerCase().includes(q);
-    const mf=f==='all'||p.status===f;
-    return mq&&mf;
-  });
-  const el=document.getElementById('po-dash-list');
-  if(!el) return;
-  const badgeMap={'Pending':'pending','Approved':'ok','Received':'completed','Cancelled':'overdue'};
-  el.innerHTML=!filtered.length?'<div class="empty-state">No POs found.</div>':
-    `<div class="tbl-wrap"><table><thead><tr>
-      <th>PO #</th><th>Vendor</th><th>Project</th><th>Date</th><th>Due Date</th><th style="text-align:right;">Total</th><th>Status</th><th></th>
-    </tr></thead><tbody>${filtered.map(p=>{
-      const total=p.items.reduce((s,i)=>s+(i.qty||0)*(i.unitPrice||0),0);
-      const ds=p.dueDate?dueDateStatus(p.dueDate):'ok';
-      return `<tr style="cursor:pointer;" onmouseover="this.style.background='#fdf5fa'" onmouseout="this.style.background=''" onclick="openPODetail('${p.id}')">
-        <td style="font-family:'Syne',sans-serif;font-weight:800;color:var(--mg);">${esc(p.no)}</td>
-        <td>${esc(p.vendor)}</td>
-        <td><span class="po-item-project-tag">${esc(p.project||'–')}</span></td>
-        <td style="font-size:11.5px;color:var(--faint);">${fmtDate(p.date)}</td>
-        <td>${p.dueDate?`<span class="due-tag ${ds}" style="font-size:10px;padding:2px 8px;">${ds==='overdue'?'OVERDUE':'Due '+fmtDate(p.dueDate)}</span>`:'<span style="color:var(--faint);font-size:11px;">COD</span>'}</td>
-        <td style="text-align:right;font-weight:700;">${peso(total)}</td>
-        <td><span class="badge badge-${badgeMap[p.status]||'pending'}">${p.status}</span></td>
-        <td><button class="btn btn-ol btn-sm" onclick="event.stopPropagation();openPODetail('${p.id}')">View</button></td>
-      </tr>`;
-    }).join('')}</tbody></table></div>`;
+  listEl.innerHTML = items.map(item => renderPipeCard(item, cellType)).join('');
+}
+
+function renderPipeCard(item, cellType) {
+  if(cellType === 'notify') {
+    // item = ticket
+    const t = item;
+    const gate = getBillingGateStatus(t.projectId);
+    const isOverride = t.status === 'Pending Override';
+    const shortages = (t.materials||[]).filter(m=>(m.remainingQty||0)>0);
+    const shortText = shortages.slice(0,2).map(m=>m.name.split(':').pop().trim()+'×'+m.remainingQty).join(', ')+(shortages.length>2?` +${shortages.length-2} more`:'');
+    return `<div class="pipe-card${isOverride?' override':''}" onclick="openPipeModal('${t.id}','notify')">
+      ${isOverride?`<div class="pipe-card-override-tag">⚠ Override Pending</div>`:''}
+      ${t.urgent?`<div class="pipe-card-override-tag" style="background:#fee2e2;border-color:#f87171;color:#991b1b;">⚡ Urgent</div>`:''}
+      <div class="pipe-card-no">${esc(t.no)}</div>
+      <div class="pipe-card-vendor">${esc(t.project)}</div>
+      <div class="pipe-card-project">Eng: ${esc(t.engineerName||t.submittedBy||'–')} · ${esc(t.siteLocation||'No location')}</div>
+      <div class="pipe-card-footer">
+        <span style="font-size:10px;color:var(--or);font-weight:600;">${esc(shortText||'–')}</span>
+        <span class="pipe-card-date">${fmtDate((t.inventoryReviewedAt||'').split('T')[0])}</span>
+      </div>
+      <div class="pipe-card-actions">
+        ${(!gate.passed&&!(t.bossApproved&&t.financeApproved))?`<button class="pipe-action-btn warn" onclick="event.stopPropagation();notifyOverrideRequest('${t.id}')">${isOverride?'Resend Override':'Request Override'}</button>`:''}
+        <button class="pipe-action-btn primary" onclick="event.stopPropagation();convertTicketToPO('${t.id}')">Create P.O. →</button>
+      </div>
+    </div>`;
+  }
+
+  // PO card (cells 2–5)
+  const p = item;
+  const total = (p.items||[]).reduce((s,i)=>s+(i.qty||0)*(i.unitPrice||0),0);
+  const ds = p.dueDate ? dueDateStatus(p.dueDate) : 'ok';
+  const dueBadge = p.dueDate
+    ? `<span class="due-tag ${ds}" style="font-size:9px;padding:1px 6px;">${ds==='overdue'?'OVERDUE':ds==='warn'?'Due Soon':fmtDate(p.dueDate)}</span>`
+    : '<span style="font-size:9.5px;color:var(--faint);">COD</span>';
+
+  let actions = '';
+  if(cellType==='generated') {
+    actions = `<button class="pipe-action-btn secondary" onclick="event.stopPropagation();openPODetail('${p.id}')">View Details</button>`;
+  } else if(cellType==='approved') {
+    actions = `<button class="pipe-action-btn primary" onclick="event.stopPropagation();openPODetail('${p.id}')">View / Track →</button>`;
+  } else if(cellType==='payment') {
+    actions = `<button class="pipe-action-btn secondary" onclick="event.stopPropagation();openPODetail('${p.id}')">View Details</button>`;
+  } else if(cellType==='pickup') {
+    actions = `<button class="pipe-action-btn secondary" onclick="event.stopPropagation();showPOReceipt('${p.id}')">Print Receipt</button>`;
+  }
+
+  return `<div class="pipe-card" onclick="openPipeModal('${p.id}','po')">
+    <div class="pipe-card-no">${esc(p.no)}</div>
+    <div class="pipe-card-vendor">${esc(p.vendor||'–')}</div>
+    <div class="pipe-card-project">${esc(p.project||'No project')}</div>
+    <div class="pipe-card-footer">
+      <span class="pipe-card-amt">${peso(total)}</span>
+      ${dueBadge}
+    </div>
+    <div class="pipe-card-actions">${actions}</div>
+  </div>`;
+}
+
+// ── PIPELINE MODAL ────────────────────────────────────────────
+let _pipeMoData = null;
+
+function openPipeModal(id, type) {
+  _pipeMoData = {id, type};
+  const mo = document.getElementById('pipe-mo');
+  const title = document.getElementById('pipe-mo-title');
+  const body  = document.getElementById('pipe-mo-body');
+  const foot  = document.getElementById('pipe-mo-foot');
+  if(!mo||!body||!foot) return;
+
+  if(type==='notify') {
+    const t = DB.tickets.find(x=>x.id===id);
+    if(!t) return;
+    const gate = getBillingGateStatus(t.projectId);
+    const isOverride = t.status==='Pending Override';
+    const stageIdx = 0; // notify is stage 0
+    title.innerHTML = `🔔 ${esc(t.no)} <span style="font-size:11px;font-weight:400;color:var(--faint);">Notify Stage</span>`;
+
+    body.innerHTML = `
+      ${pipeStages(stageIdx)}
+      <div class="pipe-info-grid">
+        <div class="pipe-info-row"><div class="pipe-info-lbl">Project</div><div class="pipe-info-val">${esc(t.project)}</div></div>
+        <div class="pipe-info-row"><div class="pipe-info-lbl">Engineer</div><div class="pipe-info-val">${esc(t.engineerName||t.submittedBy||'–')}</div></div>
+        <div class="pipe-info-row"><div class="pipe-info-lbl">Site</div><div class="pipe-info-val">${esc(t.siteLocation||'–')}</div></div>
+        <div class="pipe-info-row"><div class="pipe-info-lbl">Date Needed</div><div class="pipe-info-val">${fmtDate(t.dateNeeded||'')}</div></div>
+        <div class="pipe-info-row"><div class="pipe-info-lbl">Inv. Reviewed</div><div class="pipe-info-val">${fmtDate((t.inventoryReviewedAt||'').split('T')[0])}</div></div>
+        <div class="pipe-info-row"><div class="pipe-info-lbl">Billing Gate</div><div class="pipe-info-val">${gate.passed?'✅ Passed':'⛔ '+gate.reason}</div></div>
+      </div>
+      ${isOverride?`<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:var(--r);padding:11px 14px;font-size:12px;color:#92400e;margin-bottom:12px;"><strong>⚠ Override Pending</strong> — Awaiting Boss &amp; Finance approval before PO can be created. Override stays in this stage.</div>`:''}
+      <div style="font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--faint);margin-bottom:8px;">Materials Needed (shortage)</div>
+      <div style="background:var(--paper);border-radius:var(--r);padding:10px 14px;font-size:12px;line-height:1.9;">
+        ${(t.materials||[]).filter(m=>(m.remainingQty||0)>0).map(m=>`<div><strong>${esc(m.name.split(':').pop().trim())}</strong> — ${m.remainingQty} ${esc(m.unit)}</div>`).join('')||'<span style="color:var(--faint);">None</span>'}
+      </div>`;
+
+    foot.innerHTML = `
+      <button class="btn btn-ol" onclick="closePipeMo()">Close</button>
+      ${(!gate.passed&&!(t.bossApproved&&t.financeApproved))?`<button class="btn btn-or btn-sm" onclick="closePipeMo();notifyOverrideRequest('${t.id}')">${isOverride?'Resend Override Notice':'Request Override'}</button>`:''}
+      <button class="btn btn-mg" onclick="closePipeMo();convertTicketToPO('${t.id}')">Create P.O. →</button>`;
+
+  } else {
+    // PO detail modal
+    const p = DB.purchase_orders.find(x=>x.id===id);
+    if(!p) return;
+    const total = (p.items||[]).reduce((s,i)=>s+(i.qty||0)*(i.unitPrice||0),0);
+    const stageMap = {'Pending':1,'Approved':2,'Received':4};
+    const stageIdx = stageMap[p.status]??1;
+
+    title.innerHTML = `📝 ${esc(p.no)} <span style="font-size:11px;font-weight:400;color:var(--faint);">${p.status}</span>`;
+
+    body.innerHTML = `
+      ${pipeStages(stageIdx)}
+      <div class="pipe-info-grid">
+        <div class="pipe-info-row"><div class="pipe-info-lbl">Vendor</div><div class="pipe-info-val">${esc(p.vendor||'–')}</div></div>
+        <div class="pipe-info-row"><div class="pipe-info-lbl">Project</div><div class="pipe-info-val">${esc(p.project||'–')}</div></div>
+        <div class="pipe-info-row"><div class="pipe-info-lbl">PO Date</div><div class="pipe-info-val">${fmtDate(p.date)}</div></div>
+        <div class="pipe-info-row"><div class="pipe-info-lbl">Payment Terms</div><div class="pipe-info-val">${p.terms>0?p.terms+' days':'COD'}</div></div>
+        <div class="pipe-info-row"><div class="pipe-info-lbl">Total Amount</div><div class="pipe-info-val" style="color:var(--mg);font-size:15px;">${peso(total)}</div></div>
+        <div class="pipe-info-row"><div class="pipe-info-lbl">Payment Option</div><div class="pipe-info-val">${esc(p.paymentOption||'COD')}</div></div>
+        ${p.dueDate?`<div class="pipe-info-row"><div class="pipe-info-lbl">Due Date</div><div class="pipe-info-val"><span class="due-tag ${dueDateStatus(p.dueDate)}" style="font-size:10px;">${dueDateStatus(p.dueDate)==='overdue'?'OVERDUE':'Due '+fmtDate(p.dueDate)}</span></div></div>`:''}
+        ${p.pm?`<div class="pipe-info-row"><div class="pipe-info-lbl">PM</div><div class="pipe-info-val">${esc(p.pm)}</div></div>`:''}
+      </div>
+      <div style="font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--faint);margin-bottom:8px;">Line Items (${(p.items||[]).length})</div>
+      <div style="background:var(--paper);border-radius:var(--r);overflow:hidden;">
+        ${(p.items||[]).map(i=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid var(--bd);font-size:12px;">
+          <div><div style="font-weight:600;">${esc(i.desc)}</div><div style="font-size:10.5px;color:var(--faint);">${i.qty} ${esc(i.unit)} · ${esc(i.project||p.project||'')}</div></div>
+          <div style="font-weight:700;color:var(--ink);">${peso((i.qty||0)*(i.unitPrice||0))}</div>
+        </div>`).join('')}
+        <div style="display:flex;justify-content:space-between;padding:10px 12px;font-family:'Syne',sans-serif;font-size:13px;font-weight:800;">
+          <span>Total</span><span style="color:var(--mg);">${peso(total)}</span>
+        </div>
+      </div>`;
+
+    let footBtns = `<button class="btn btn-ol" onclick="closePipeMo()">Close</button>`;
+    footBtns += `<button class="btn btn-ol btn-sm" onclick="closePipeMo();openPODetail('${p.id}')">Full Details</button>`;
+    if(p.status==='Received') {
+      footBtns += `<button class="btn btn-bl btn-sm" onclick="closePipeMo();showPOReceipt('${p.id}')">Print Receipt</button>`;
+    }
+    foot.innerHTML = footBtns;
+  }
+
+  mo.classList.add('open');
+}
+
+function closePipeMo() {
+  document.getElementById('pipe-mo')?.classList.remove('open');
+  _pipeMoData = null;
+}
+
+function pipeStages(activeIdx) {
+  const stages = [
+    {icon:'🔔',label:'Notify'},
+    {icon:'📝',label:'Generated'},
+    {icon:'✅',label:'Approved'},
+    {icon:'💳',label:'Payment'},
+    {icon:'🚚',label:'Delivered'},
+  ];
+  return `<div class="pipe-stages">
+    ${stages.map((s,i)=>`
+      <div class="pipe-stage-step">
+        <div class="pipe-stage-dot ${i<activeIdx?'done':i===activeIdx?'active':'idle'}">${i<activeIdx?'✓':s.icon}</div>
+      </div>
+      ${i<stages.length-1?`<div class="pipe-stage-line ${i<activeIdx?'done':'idle'}"></div>`:''}
+    `).join('')}
+  </div>
+  <div style="display:flex;justify-content:space-between;font-size:9.5px;color:var(--faint);margin:-8px 0 16px;padding:0 2px;">
+    ${stages.map(s=>`<span style="text-align:center;width:28px;">${s.label}</span>`).join('')}
+  </div>`;
 }
 
 // ── PO OFFICER PURCHASE ORDERS ───────────────────────────────
