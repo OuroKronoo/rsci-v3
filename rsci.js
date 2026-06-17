@@ -1174,6 +1174,8 @@ function renderAccDashboard() {
 
   const billingGateSec=document.getElementById('acc-dash-billing-gate');
   if(billingGateSec) billingGateSec.innerHTML=buildBillingGateDashboardHTML();
+  const depositSec=document.getElementById('acc-dash-deposit-status');
+  if(depositSec) depositSec.innerHTML=buildDepositStatusHTML();
 
   const overrideSec=document.getElementById('acc-dash-override-section');
   if(overrideSec) overrideSec.innerHTML=buildOverrideQueueHTML('finance', {compact:false, showViewAll:true});
@@ -2679,7 +2681,7 @@ function openPODetail(id) {
     <div class="si-row"><div class="si-label">Created By</div><div class="si-val">${esc(p.createdBy||'–')}</div></div>
     <div class="si-row"><div class="si-label">Requested By</div><div class="si-val">${esc(p.requisitor||'–')}</div></div>
     <div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;">
-      ${p.status==='Pending'?`<button class="btn btn-gn btn-sm" onclick="updatePOStatus('${p.id}','Approved')" style="justify-content:center;">✓ Approve</button><button class="btn btn-rd btn-sm" onclick="updatePOStatus('${p.id}','Cancelled')" style="justify-content:center;">✕ Cancel</button>`:''}
+      ${(p.status==='Pending'&&['boss','admin','accountant'].includes(_currentUser?.role||''))?`<button class="btn btn-gn btn-sm" onclick="updatePOStatus('${p.id}','Approved')" style="justify-content:center;">✓ Approve</button><button class="btn btn-rd btn-sm" onclick="updatePOStatus('${p.id}','Cancelled')" style="justify-content:center;">✕ Cancel</button>`:''}
       ${p.status==='Approved'?`<button class="btn btn-bl btn-sm" onclick="updatePOStatus('${p.id}','Received')" style="justify-content:center;">📦 Mark Received</button>`:''}
       <button class="btn btn-ol btn-sm" onclick="navigate('acc-po-inbox',document.querySelector('[data-page=acc-po-inbox]'))" style="justify-content:center;background:rgba(255,255,255,.1);color:rgba(255,255,255,.7);border-color:rgba(255,255,255,.2);">← Back</button>
     </div>`;
@@ -2772,8 +2774,26 @@ function updatePOStatus(id, status) {
       }
     });
     ensurePoReleaseQueue().forEach(entry=>{ if(entry.poId===p.id) { entry.status='Delivered'; entry.updatedAt=nowISO(); } });
+    // ── Link received PO items to release_monitors for inventory hand-off ──
+    const itemsToDeliver=p.items.filter(i=>(i.receivedQty||i.expectedQty||i.qty||0)>0);
+    if(itemsToDeliver.length>0) {
+      // Create or update a release monitor entry so inventory knows to deliver items to site
+      const existingMon=(DB.release_monitors||[]).find(m=>m.orderRef===p.no);
+      if(!existingMon) {
+        DB.release_monitors=DB.release_monitors||[];
+        const monId=uid();
+        DB.release_monitors.push({id:monId,projectName:p.project||'–',orderRef:p.no,pm:p.pm||'–',siteLocation:p.siteLocation||'–',remarks:`Items received from ${p.vendor} — ready for site delivery.`,status:'active',createdAt:nowISO()});
+        itemsToDeliver.forEach(item=>{
+          const inv=findInventoryItem(item.desc);
+          const delivQty=item.receivedQty||item.qty||0;
+          DB.release_items=DB.release_items||[];
+          DB.release_items.push({id:uid(),monitorId:monId,ticketId:p.ticketId||null,itemName:inv?.name||item.desc,inventoryId:inv?.id||null,reservedQty:delivQty,releasedQty:0,unit:item.unit||inv?.unit||'PCS',status:'Reserved',createdAt:nowISO()});
+        });
+      }
+    }
     updateInvPill();
-    pushNotification({type:'green',title:'PO received',text:`${p.no} received. Stock updated.`,roles:['admin','accountant','inventory_manager'],source:'po-received'});
+    pushNotification({type:'green',title:'PO received — items ready',text:`${p.no} received from ${p.vendor}. ${itemsToDeliver.length} item(s) ready for pick-up/delivery to site. Check Release Monitor.`,roles:['admin','inventory_manager'],source:'po-received'});
+    pushNotification({type:'blue',title:'PO received',text:`${p.no} stock updated.`,roles:['accountant','po_officer'],source:'po-received'});
     pushPOAudit(p,'Received',`Marked received by ${_currentUser?.name||'–'}.`);
   }
   if(status==='Cancelled') pushPOAudit(p,'Cancelled',`Cancelled by ${_currentUser?.name||'–'}.`);
@@ -2942,7 +2962,7 @@ function renderPipeCard(item, cellType) {
   } else if(cellType==='payment') {
     actions = `<button class="pipe-action-btn secondary" onclick="event.stopPropagation();openPODetail('${p.id}')">View Details</button>`;
   } else if(cellType==='pickup') {
-    actions = `<button class="pipe-action-btn secondary" onclick="event.stopPropagation();showPOReceipt('${p.id}')">Print Receipt</button>`;
+    actions = `<button class="pipe-action-btn secondary" onclick="event.stopPropagation();showPOReceipt('${p.id}')">Print Receipt</button><button class="pipe-action-btn primary" onclick="event.stopPropagation();navigate('inv-release',document.querySelector('[data-page=inv-release]'))" title="Go to Release Monitor to coordinate site delivery">🚚 Delivery →</button>`;
   }
 
   return `<div class="pipe-card" onclick="openPipeModal('${p.id}','po')">
@@ -3034,6 +3054,7 @@ function openPipeModal(id, type) {
     footBtns += `<button class="btn btn-ol btn-sm" onclick="closePipeMo();openPODetail('${p.id}')">Full Details</button>`;
     if(p.status==='Received') {
       footBtns += `<button class="btn btn-bl btn-sm" onclick="closePipeMo();showPOReceipt('${p.id}')">Print Receipt</button>`;
+      footBtns += `<button class="btn btn-gn btn-sm" onclick="closePipeMo();navigate('inv-release',document.querySelector('[data-page=inv-release]'))">🚚 Coordinate Delivery</button>`;
     }
     foot.innerHTML = footBtns;
   }
@@ -3712,6 +3733,75 @@ function saveNewItem() {
 
 // ── BILLING ───────────────────────────────────────────────────
 let activeBillingId=null, editingInvoiceId=null;
+
+function buildDepositStatusHTML() {
+  // Show approved POs and whether a deposit/payment has been released from billing
+  const approvedPOs=DB.purchase_orders.filter(p=>p.status==='Approved'||p.status==='Pending');
+  if(!approvedPOs.length) {
+    return `<div class=\"dash-widget\" style=\"margin-bottom:18px;\">
+      <div class=\"dash-widget-head\"><div class=\"dash-widget-title\" style=\"color:var(--gn);\">💳 Deposit / Payment Status</div></div>
+      <div class=\"dash-widget-body\"><div class=\"empty-state\" style=\"padding:16px;\"><div class=\"empty-icon\">✓</div>No active POs requiring deposit monitoring.</div></div>
+    </div>`;
+  }
+  const rows=approvedPOs.map(p=>{
+    const total=(p.items||[]).reduce((s,i)=>s+(i.qty||0)*(i.unitPrice||0),0);
+    // Check if there's a matching billing record for this project with paid invoices
+    const billingRecord=(DB.billing_records||[]).find(r=>(r.projectId===p.projectId)||(r.project||'').toLowerCase()===(p.project||'').toLowerCase());
+    const releasedExpenses=(DB.expenses||[]).filter(e=>(e.project||'').toLowerCase()===(p.project||'').toLowerCase()&&e.status==='Released');
+    const totalReleased=releasedExpenses.reduce((s,e)=>s+(parseFloat(e.amount)||0),0);
+    // Also check paymentConfirmedAt flag on PO
+    const depositConfirmed=!!p.paymentConfirmedAt;
+    const depositBy=p.paymentConfirmedBy||'';
+    const depositAt=p.paymentConfirmedAt||'';
+    // Billing-side: paid invoices for this project
+    let paidBillingTotal=0; let paidInvoiceCount=0;
+    if(billingRecord) {
+      const paidInvs=(DB.billing_invoices||[]).filter(i=>i.recordId===billingRecord.id&&i.status==='Paid');
+      paidInvoiceCount=paidInvs.length;
+      paidBillingTotal=paidInvs.reduce((s,i)=>s+(parseFloat(i.baseAmount)||0),0);
+    }
+    const hasDeposit=depositConfirmed||totalReleased>0;
+    const statusColor=depositConfirmed?'var(--gn)':totalReleased>0?'var(--bl)':'var(--or)';
+    const statusLabel=depositConfirmed?`✅ Deposit Released${depositBy?' by '+depositBy:''}${depositAt?' · '+fmtDate(depositAt.split('T')[0]):''}`:totalReleased>0?`💸 ${peso(totalReleased)} released expenses`:'⏳ No deposit released yet';
+    return `<div style=\"border:1px solid var(--bd);border-radius:var(--r);padding:12px 14px;margin-bottom:8px;background:var(--white);\">
+      <div style=\"display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;\">
+        <div>
+          <div style=\"font-family:'Syne',sans-serif;font-weight:800;color:var(--mg);font-size:12.5px;\">${esc(p.no)}</div>
+          <div style=\"font-size:11.5px;font-weight:600;margin-top:1px;\">${esc(p.vendor)}</div>
+          <div style=\"font-size:11px;color:var(--faint);\">${esc(p.project||'–')} · <span class=\"badge badge-${p.status==='Approved'?'ok':'pending'}\" style=\"font-size:9.5px;padding:1px 6px;\">${p.status}</span></div>
+        </div>
+        <div style=\"text-align:right;\">
+          <div style=\"font-weight:800;font-size:14px;\">${peso(total)}</div>
+          ${p.dueDate?`<span class=\"due-tag ${dueDateStatus(p.dueDate)}\" style=\"font-size:9.5px;padding:1px 6px;\">${dueDateStatus(p.dueDate)==='overdue'?'OVERDUE':'Due '+fmtDate(p.dueDate)}</span>`:'<span style=\"font-size:10px;color:var(--faint);\">COD</span>'}
+        </div>
+      </div>
+      <div style=\"margin-top:8px;padding:7px 10px;background:var(--paper);border-radius:var(--r);font-size:11.5px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;\">
+        <span style=\"font-weight:600;color:${statusColor};\">${statusLabel}</span>
+        ${billingRecord&&paidInvoiceCount>0?`<span style=\"font-size:10.5px;color:var(--gn);\">📄 ${paidInvoiceCount} paid invoice(s) · ${peso(paidBillingTotal)}</span>`:''}
+      </div>
+      ${!depositConfirmed?`<div style=\"margin-top:7px;\"><button class=\"btn btn-gn btn-sm\" onclick=\"confirmPODeposit('${p.id}')\" style=\"width:100%;justify-content:center;\">💳 Mark Deposit Released</button></div>`:''}
+    </div>`;
+  });
+  return `<div class=\"dash-widget\" style=\"margin-bottom:18px;\">
+    <div class=\"dash-widget-head\">
+      <div class=\"dash-widget-title\" style=\"color:var(--mg);\">💳 Deposit / Payment Status</div>
+      <span class=\"badge badge-partial\">${approvedPOs.length}</span>
+    </div>
+    <div style=\"padding:12px 14px;\">${rows.join('')}</div>
+  </div>`;
+}
+
+function confirmPODeposit(poId) {
+  const p=DB.purchase_orders.find(x=>x.id===poId); if(!p) return;
+  if(p.paymentConfirmedAt) { toast('Deposit already marked as released.','warn'); return; }
+  p.paymentConfirmedAt=nowISO();
+  p.paymentConfirmedBy=_currentUser?.name||'–';
+  pushPOAudit(p,'Deposit Released',`Payment/deposit confirmed by ${_currentUser?.name||'–'}.`);
+  pushNotification({type:'green',title:'Deposit Released',text:`Deposit for ${p.no} (${p.vendor}) confirmed by ${_currentUser?.name||'Accountant'}.`,roles:['po_officer','admin','boss'],source:'po-deposit'});
+  saveDB(); updateAccStats();
+  toast(`Deposit for ${p.no} marked as released.`,'ok');
+  renderAccDashboard();
+}
 
 function buildBillingGateDashboardHTML() {
   const blocked=DB.tickets.filter(t=>{
@@ -4425,9 +4515,89 @@ function renderBossDashboard() {
   set('boss-override-cnt',pendOv);
   set('boss-billed-val',billed>=1000000?`₱${(billed/1000000).toFixed(1)}M`:`₱${(billed/1000).toFixed(0)}K`);
   set('boss-po-cnt',activePOs);
+
+  // ── PO APPROVAL QUEUE (Generated POs needing Boss/OM sign-off) ──
+  const approvalSec=document.getElementById('boss-dash-po-approval-section');
+  if(approvalSec) approvalSec.innerHTML=buildBossPOApprovalHTML();
+
   const sec=document.getElementById('boss-dash-override-section');
   if(sec) sec.innerHTML=buildOverrideQueueHTML('boss',{compact:false, showViewAll:true});
   updateOverrideNavBadge();
+}
+
+function buildBossPOApprovalHTML() {
+  const pendingPOs=DB.purchase_orders.filter(p=>p.status==='Pending');
+  const role=_currentUser?.role||'boss';
+  const approverName=_currentUser?.name||'–';
+  if(!pendingPOs.length) return `<div class=\"dash-widget\"><div class=\"dash-widget-head\"><div class=\"dash-widget-title\" style=\"color:var(--gn);\">✅ P.O. Approval Queue</div></div><div class=\"empty-state\" style=\"padding:16px;\"><div class=\"empty-icon\">📋</div>No pending POs awaiting approval.</div></div>`;
+  return `<div class=\"dash-widget\">
+    <div class=\"dash-widget-head\">
+      <div class=\"dash-widget-title\" style=\"color:var(--mg);\">📝 P.O. Approval Queue</div>
+      <span class=\"badge badge-out\">${pendingPOs.length}</span>
+    </div>
+    <div style=\"font-size:11.5px;color:var(--faint);padding:0 16px 10px;\">Generated by PO Officer — awaiting your review and approval before vendor is contacted.</div>
+    ${pendingPOs.map(p=>{
+      const total=(p.items||[]).reduce((s,i)=>s+(i.qty||0)*(i.unitPrice||0),0);
+      return `<div class=\"alert-row\" style=\"flex-direction:column;align-items:stretch;gap:8px;padding:12px 16px;\">
+        <div style=\"display:flex;justify-content:space-between;align-items:flex-start;gap:8px;\">
+          <div>
+            <div style=\"font-family:'Syne',sans-serif;font-weight:800;color:var(--mg);font-size:13px;\">${esc(p.no)}</div>
+            <div style=\"font-size:12px;font-weight:600;margin-top:1px;\">${esc(p.vendor)}</div>
+            <div style=\"font-size:11px;color:var(--faint);\">${esc(p.project||'–')} · ${esc(p.pm||'–')}</div>
+          </div>
+          <div style=\"text-align:right;\">
+            <div style=\"font-weight:800;font-size:14px;color:var(--ink);\">${peso(total)}</div>
+            <div style=\"font-size:10.5px;color:var(--faint);\">${fmtDate(p.date)}</div>
+            ${p.dueDate?`<span class=\"due-tag ${dueDateStatus(p.dueDate)}\" style=\"font-size:9.5px;padding:1px 6px;\">${dueDateStatus(p.dueDate)==='overdue'?'OVERDUE':'Due '+fmtDate(p.dueDate)}</span>`:''}
+          </div>
+        </div>
+        <div style=\"display:flex;gap:8px;flex-wrap:wrap;\">
+          <button class=\"btn btn-gn btn-sm\" onclick=\"bossPOApprove('${p.id}')\" style=\"flex:1;justify-content:center;\">✓ Approve P.O.</button>
+          <button class=\"btn btn-ol btn-sm\" onclick=\"openPODetail('${p.id}')\" style=\"flex:1;justify-content:center;\">View Details</button>
+          <button class=\"btn btn-rd btn-sm\" onclick=\"bossPOReject('${p.id}')\" style=\"flex:1;justify-content:center;\">✕ Reject</button>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function bossPOApprove(id) {
+  const p=DB.purchase_orders.find(x=>x.id===id); if(!p||p.status!=='Pending') return;
+  p.items.forEach(item=>{
+    const inv=findInventoryItem(item.desc);
+    if(inv) {
+      const toBuy=Math.max(0,item.qty||0);
+      item.expectedQty=toBuy;
+      if(toBuy>0) {
+        inv.expected=(inv.expected||0)+toBuy;
+        DB.inventory_log.unshift({id:uid(),dt:nowISO(),type:'po',itemName:inv.name,qtyChange:toBuy,balanceAfter:inv.qty,remarks:`PO ${p.no} - ${toBuy} units expected from ${p.vendor}`});
+      }
+    }
+  });
+  p.status='Approved';
+  p.approvedBy=_currentUser?.name||'–'; p.approvedAt=nowISO();
+  syncPoReleaseQueueFromPO(p);
+  updateInvPill();
+  showPOReceipt(p.id);
+  const pendingItems=(DB.po_release_queue||[]).filter(q=>q.poId===p.id&&q.status!=='Prepared');
+  const itemSummary=pendingItems.slice(0,3).map(item=>item.itemLabel).join(', ');
+  pushNotification({type:'green',title:'P.O. Approved',text:`${p.no} approved by ${_currentUser?.name||'Boss'}. Inventory can now expect delivery${itemSummary?`: ${itemSummary}${pendingItems.length>3?'...':''}`:''}.`,roles:['admin','accountant','inventory_manager','po_officer'],source:'po-approved'});
+  pushPOAudit(p,'Approved',`Approved by ${_currentUser?.name||'–'} (${_currentUser?.role||'boss'}).`);
+  saveDB(); updateAccStats();
+  toast(`P.O. ${p.no} approved.`,'ok');
+  renderBossDashboard();
+}
+
+function bossPOReject(id) {
+  const p=DB.purchase_orders.find(x=>x.id===id); if(!p) return;
+  const reason=prompt(`Reason for rejecting P.O. ${p.no}:`);
+  if(reason===null) return; // cancelled
+  p.status='Cancelled';
+  pushPOAudit(p,'Rejected',`Rejected by ${_currentUser?.name||'–'}: ${reason||'No reason given.'}`);
+  pushNotification({type:'red',title:'P.O. Rejected',text:`${p.no} was rejected by ${_currentUser?.name||'Boss'}: ${reason||'–'}`,roles:['po_officer','admin'],source:'po-rejected'});
+  saveDB(); updateAccStats();
+  toast(`P.O. ${p.no} rejected.`,'warn');
+  renderBossDashboard();
 }
 
 function renderBossOverrideQueue() {
