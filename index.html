@@ -26,12 +26,12 @@
       <strong style="color:var(--mg);font-family:'Syne',sans-serif;font-size:15px;">Integrated Operations Platform</strong><br><br>
       A unified system for managing Materials Ticketing, Inventory, Subcontractors, Customer Billing, Purchase Orders and General Expenses — built exclusively for RSCI personnel.
       <div class="land-modules">
-        <div class="land-mod">📋 Ticketing<span>Material requests</span></div>
-        <div class="land-mod">📦 Inventory<span>Stock management</span></div>
-        <div class="land-mod">🧾 Billing<span>Customer invoices</span></div>
-        <div class="land-mod">🛒 Purchase Orders<span>Procurement</span></div>
-        <div class="land-mod">👷 Subcontractors<span>Contract tracking</span></div>
-        <div class="land-mod">💰 Expenses<span>General ledger</span></div>
+        <div class="land-mod">Ticketing<span>Material requests</span></div>
+        <div class="land-mod">Inventory<span>Stock management</span></div>
+        <div class="land-mod">Billing<span>Customer invoices</span></div>
+        <div class="land-mod">Purchase Orders<span>Procurement</span></div>
+        <div class="land-mod">Subcontractors<span>Contract tracking</span></div>
+        <div class="land-mod">Expenses<span>General ledger</span></div>
       </div>
     </div>
   </div>
@@ -54,7 +54,7 @@
       </div>
       <div id="demo-pass-hint" style="margin-top:6px;font-size:11.5px;color:rgba(255,255,255,.65);">Password: <strong>demo2025</strong> (any role)</div>
       <div style="margin-top:10px;">
-        <button type="button" class="btn btn-ol btn-sm" style="width:100%;justify-content:center;border-color:rgba(255,255,255,.35);color:#fff;" onclick="resetDemoData()">↺ Restore full sample dataset</button>
+        <button type="button" class="btn btn-ol btn-sm" style="width:100%;justify-content:center;border-color:rgba(255,255,255,.35);color:#fff;" onclick="resetDemoData()">Restore full sample dataset</button>
       </div>
       <details class="demo-flow-hint">
         <summary>Suggested presentation flow</summary>
@@ -115,7 +115,7 @@
 
   <div class="main-area">
     <div class="demo-present-bar" id="demo-present-bar" style="display:none;">
-      <span>📊 Prototype — sample data loaded</span>
+      <span>Prototype — sample data loaded</span>
       <button type="button" class="btn btn-ol btn-sm" onclick="resetDemoData()">Reset sample data</button>
     </div>
     <div class="topbar">
@@ -138,7 +138,7 @@
 
     <!-- Notification Panel -->
     <div class="notif-panel" id="notif-panel">
-      <div class="notif-head">🔔 Notifications</div>
+      <div class="notif-head">Notifications</div>
       <div id="notif-list"></div>
     </div>
 
@@ -191,7 +191,7 @@
               <div style="display:flex;flex-direction:column;justify-content:flex-end;">
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 0;">
                   <input type="checkbox" id="nt-urg" style="width:16px;height:16px;accent-color:var(--rd);">
-                  <span style="font-weight:600;color:var(--rd);font-size:13px;">⚡ Mark as Urgent</span>
+                  <span style="font-weight:600;color:var(--rd);font-size:13px;">Mark as Urgent</span>
                 </label>
               </div>
             </div>
@@ -258,8 +258,10 @@
           <div class="stat-icon"><svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg></div>
         </div>
       </div>
-      <div id="acc-dash-billing-gate"></div>
-      <div id="acc-dash-deposit-status" style="margin-top:18px;"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+        <div id="acc-dash-billing-gate"></div>
+        <div id="acc-dash-deposit-status"></div>
+      </div>
       <div id="acc-dash-override-section"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;" id="acc-dash-cols"></div>
     </div>
@@ -315,7 +317,7 @@
         <!-- Cell 1: Notify -->
         <div class="pipe-cell" id="pipe-notify">
           <div class="pipe-cell-head" style="background:linear-gradient(135deg,#6d28d9,#7c3aed);">
-            <div class="pipe-cell-icon">🔔</div>
+            <div class="pipe-cell-icon">1</div>
             <div>
               <div class="pipe-cell-title">Notify</div>
               <div class="pipe-cell-sub">Engineer orders awaiting PO</div>
@@ -330,7 +332,7 @@
         <!-- Cell 2: Generated P.O. -->
         <div class="pipe-cell" id="pipe-generated">
           <div class="pipe-cell-head" style="background:linear-gradient(135deg,#b5006e,#c2185b);">
-            <div class="pipe-cell-icon">📝</div>
+            <div class="pipe-cell-icon">2</div>
             <div>
               <div class="pipe-cell-title">Generated P.O.</div>
               <div class="pipe-cell-sub">POs created, pending review</div>
@@ -345,7 +347,7 @@
         <!-- Cell 3: Approved P.O. -->
         <div class="pipe-cell" id="pipe-approved">
           <div class="pipe-cell-head" style="background:linear-gradient(135deg,#1565c0,#1976d2);">
-            <div class="pipe-cell-icon">✅</div>
+            <div class="pipe-cell-icon">3</div>
             <div>
               <div class="pipe-cell-title">Approved P.O.</div>
               <div class="pipe-cell-sub">Boss / Ops Manager validated</div>
@@ -360,7 +362,7 @@
         <!-- Cell 4: For Payment -->
         <div class="pipe-cell" id="pipe-payment">
           <div class="pipe-cell-head" style="background:linear-gradient(135deg,#e8700a,#f57c00);">
-            <div class="pipe-cell-icon">💳</div>
+            <div class="pipe-cell-icon">4</div>
             <div>
               <div class="pipe-cell-title">For Payment</div>
               <div class="pipe-cell-sub">Accountant confirms deposit</div>
@@ -375,7 +377,7 @@
         <!-- Cell 5: Pick Up / Deliver -->
         <div class="pipe-cell" id="pipe-pickup">
           <div class="pipe-cell-head" style="background:linear-gradient(135deg,#1e8c1e,#2e7d32);">
-            <div class="pipe-cell-icon">🚚</div>
+            <div class="pipe-cell-icon">5</div>
             <div>
               <div class="pipe-cell-title">Pick Up / Deliver</div>
               <div class="pipe-cell-sub">Final — materials en route</div>
@@ -536,8 +538,7 @@
         </div>
         <div id="sc-detail-body">
           <div class="card" style="padding:40px;text-align:center;color:var(--faint);">
-            <div style="font-size:36px;margin-bottom:10px;">👷</div>
-            <div style="font-size:13px;">Select a subcontractor from the list to view their ledger and billing history.</div>
+            <div style="font-size:13px;color:var(--soft);">Select a subcontractor from the list to view their ledger and billing history.</div>
           </div>
         </div>
       </div>
@@ -648,7 +649,7 @@
         <div>
           <div class="dash-widget">
             <div class="dash-widget-head">
-              <div class="dash-widget-title">⚠ Low / Out of Stock Alerts</div>
+              <div class="dash-widget-title">Low / Out of Stock Alerts</div>
               <span class="badge badge-out" id="alert-cnt">0</span>
             </div>
             <div class="dash-widget-body no-pad">
@@ -706,7 +707,7 @@
               <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Unit</th>
               <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Unit Price (₱)</th>
               <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Qty</th>
-              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Expected 📦</th>
+              <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Expected</th>
               <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Total Avail</th>
               <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;text-align:right;">Min Stock</th>
               <th style="background:#fafafa;border-bottom:2px solid var(--bd);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--faint);padding:10px 14px;">Status</th>
